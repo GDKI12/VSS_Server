@@ -3,6 +3,9 @@
 #include <QDir>
 #include <QDebug>
 #include <QObject>
+#include <QMutex>
+#include <QMutexLocker>
+#include <QQueue>
 
 const QString VSS_URL = "http://localhost:8100";
 
@@ -21,7 +24,6 @@ class VideoHandler : public QObject
 
 public:
     explicit VideoHandler(QObject* parent = nullptr);
-
     void requestHealty();
     void uploadVideo(QString);
     void summarize();
@@ -30,6 +32,15 @@ public:
     void getFiles();
     void request(QString);
 
+private:
+    void startNextUpload();
+
+public slots:
+    void enqueueUpload(const QString&);
+
+signals:
+    void uploadFinished(const QString& videoPath, const QString& videoId);
+    void uploadFailed(const QString& videoPath, const QString& reson);
 
 private:
     QNetworkAccessManager manager;
@@ -37,4 +48,9 @@ private:
 
     QString modelId;
     QString videoId;
+    QString currentVideoPath;
+
+    QQueue<QString> m_uploadQueue;
+    bool m_uploading = false;
+
 };

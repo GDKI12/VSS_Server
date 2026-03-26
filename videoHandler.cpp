@@ -14,13 +14,35 @@ VideoHandler::VideoHandler(QObject* parent) : QObject(parent)
 
 }
 
-void VideoHandler::request(QString videoPath)
+
+void VideoHandler::enqueueUpload(const QString& videoPath)
 {
-    uploadVideo(videoPath);
+    m_uploadQueue.enqueue(videoPath);
 
-    summarize();
+    qDebug() << "[VideoHandler] queued: " << videoPath
+             << "queue size = " << m_uploadQueue.size();
 
-    qna();
+    if(m_uploading)
+    {
+        return;
+    }
+
+    m_uploading = true;
+    startNextUpload();
+}
+
+void VideoHandler::startNextUpload()
+{
+    if(m_uploadQueue.isEmpty())
+    {
+        m_uploading = false;
+        return;
+    }
+
+    currentVideoPath = m_uploadQueue.dequeue();
+    qDebug() << "[VideoHandler] start upload" << currentVideoPath;
+
+    uploadVideo(currentVideoPath);
 }
 
 void VideoHandler::requestHealty()
@@ -77,6 +99,8 @@ void VideoHandler::getFiles()
 
 }
 
+
+
 void VideoHandler::uploadVideo(QString videoPath)
 {
     QFile* video = new QFile(videoPath);
@@ -86,10 +110,17 @@ void VideoHandler::uploadVideo(QString videoPath)
 
     if(!video->open(QIODevice::ReadOnly))
     {
-        qWarning() << "Cannot open video:" << videoPath
-                       << "fileError =" << video->errorString();
+        QString reason = QString("Cannot open video: %1 fileError = %2")
+                .arg(videoPath)
+                .arg(video->errorString());
+
+        qWarning() << reason;
+
         delete video;
         delete multiPart;
+
+        emit uploadFailed(videoPath, reason);
+        startNextUpload();
         return;
     }
 
@@ -128,7 +159,7 @@ void VideoHandler::uploadVideo(QString videoPath)
                            << reply->errorString();
             });
 
-    connect(reply, &QNetworkReply::finished, [reply, this](){
+    connect(reply, &QNetworkReply::finished, [reply, this, videoPath](){
 
         QVariant statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute);
         QVariant reason = reply->attribute(QNetworkRequest::HttpReasonPhraseAttribute);
@@ -139,13 +170,17 @@ void VideoHandler::uploadVideo(QString videoPath)
         if(reply->error() != QNetworkReply::NoError)
         {
             int httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-            qWarning() << "Upload error:"
-                       << "networkError = " << reply->error()
-                       << "errorString = " << reply->errorString()
-                       << "httpStatus = " << httpStatus
-                       << "reason = " << reason;
+            QString err = QString("Upload error: networkError=%1 errorString=%2 httpStatus=%3 reason=%4")
+                                          .arg(reply->error())
+                                          .arg(reply->errorString())
+                                          .arg(httpStatus)
+                                          .arg(reason.toString());
+
+            qWarning() << err;
+            emit uploadFailed(videoPath, err);
 
             reply->deleteLater();
+            startNextUpload();
             return;
         }
 
@@ -165,7 +200,9 @@ void VideoHandler::uploadVideo(QString videoPath)
 
 void VideoHandler::summarize()
 {
-    QElapsedTimer timer;
+    QElapsedTimer *timer = new QElapsedTimer();
+    timer->start();
+
 
     QJsonObject prompts;
     prompts["vlm_prompt"] = "Write a concise and clear dense caption for the provided warehouse video, focusing on irregular or hazardous events such as boxes falling, workers not wearing PPE, workers falling, workers taking photographs, workers chitchatting, forklift stuck, etc. Start and end each sentence with a time stamp.";
@@ -191,7 +228,6 @@ void VideoHandler::summarize()
     req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
 
     QNetworkReply *reply = manager.post(req, data);
-    timer.start();
 
     qDebug() << "wating for summarize";
 
@@ -220,14 +256,27 @@ void VideoHandler::summarize()
                        << "httpStatus = " << httpStatus
                        << "reason = " << reason;
 
+            QString err = QString("Summarize error: networkError=%1 errorString=%2 httpStatus=%3 reason=%4")
+                                          .arg(reply->error())
+                                          .arg(reply->errorString())
+                                          .arg(httpStatus)
+                                          .arg(reason.toString());
+
+            qWarning() << err;
+            emit uploadFailed(currentVideoPath, err);
+
             reply->deleteLater();
+            delete timer;
+            startNextUpload();
             return;
         }
 
-        quint64 inferTime = timer.elapsed();
+        quint64 inferTime = timer->elapsed();
         qDebug() << "Inference Time : " << int(inferTime);
 
         qDebug() << "Completed SUMMARIZE";
+        reply->deleteLater();
+        delete timer;
 
         qna();
     });
@@ -269,7 +318,7 @@ void VideoHandler::qna()
                            << reply->errorString();
             });
 
-    connect(reply, &QNetworkReply::finished,[reply](){
+    connect(reply, &QNetworkReply::finished,[reply, this](){
 
         QVariant statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute);
         QVariant reason = reply->attribute(QNetworkRequest::HttpReasonPhraseAttribute);
@@ -279,13 +328,17 @@ void VideoHandler::qna()
         if(reply->error() != QNetworkReply::NoError)
         {
             int httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-            qWarning() << "Upload error:"
-                       << "networkError = " << reply->error()
-                       << "errorString = " << reply->errorString()
-                       << "httpStatus = " << httpStatus
-                       << "reason = " << reason;
+                        QString err = QString("Q&A error: networkError=%1 errorString=%2 httpStatus=%3 reason=%4")
+                                          .arg(reply->error())
+                                          .arg(reply->errorString())
+                                          .arg(httpStatus)
+                                          .arg(reason.toString());
+
+            qWarning() << err;
+            emit uploadFailed(currentVideoPath, err);
 
             reply->deleteLater();
+            startNextUpload();
             return;
         }
         QJsonDocument doc = QJsonDocument::fromJson(responseData);
@@ -301,6 +354,10 @@ void VideoHandler::qna()
         qDebug() << "Complete to Q&A";
         qDebug() << "Answer : " << content;
 
+        emit uploadFinished(currentVideoPath, videoId);
+
+        reply->deleteLater();
+        startNextUpload();
     });
 
 }

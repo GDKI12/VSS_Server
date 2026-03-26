@@ -6,6 +6,7 @@
 #include <QTcpSocket>
 #include <QHash>
 #include <QProcess>
+#include <QThread>
 #include <QString>
 #include "videoHandler.h"
 
@@ -34,6 +35,7 @@ private:
     QTcpServer m_server;
     QHash<QTcpSocket*, ClientContext*> m_clients;
     VideoHandler* handler = nullptr;
+    QThread* uploadThread = nullptr;
     quint16 m_port = 0;
 };
 

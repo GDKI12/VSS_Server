@@ -7,7 +7,28 @@
 VideoServer::VideoServer(quint16 port, QObject *parent)
     : QObject(parent), m_port(port)
 {
+    uploadThread = new QThread(this);
     handler = new VideoHandler();
+    handler->moveToThread(uploadThread);
+
+    connect(uploadThread, &QThread::finished,
+            handler, &QObject::deleteLater);
+
+    connect(handler, &VideoHandler::uploadFinished,
+            this, [](const QString &videoPath, const QString &videoId) {
+                qDebug() << "[Server] upload finished:"
+                         << "path =" << videoPath
+                         << "videoId =" << videoId;
+            });
+
+    connect(handler, &VideoHandler::uploadFailed,
+            this, [](const QString &videoPath, const QString &reason) {
+                qWarning() << "[Server] upload failed:"
+                           << "path =" << videoPath
+                           << "reason =" << reason;
+            });
+
+    uploadThread->start();
 
     connect(&m_server, &QTcpServer::newConnection,
             this, &VideoServer::onNewConnection);
@@ -42,7 +63,16 @@ VideoServer::~VideoServer()
     }
 
     m_clients.clear();
-    delete handler;
+
+    if(uploadThread)
+    {
+        uploadThread->quit();
+        uploadThread->wait();
+
+        uploadThread = nullptr;
+    }
+
+    handler = nullptr;
 }
 
 void VideoServer::startFfmpegForClient(QTcpSocket *socket, ClientContext *ctx)
@@ -191,7 +221,7 @@ void VideoServer::onDisconnected()
                 qDebug() << "Saved mp4:" << ctx->savePath
                          << "size =" << QFileInfo(ctx->savePath).size();
 
-                handler->uploadVideo(ctx->savePath);
+                QMetaObject::invokeMethod(handler, "enqueueUpload", Qt::QueuedConnection, Q_ARG(QString, ctx->savePath));
             } else {
                 qWarning() << "Saved file missing or empty:" << ctx->savePath;
             }
