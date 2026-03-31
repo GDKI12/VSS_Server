@@ -7,20 +7,25 @@
 #include <QJsonArray>
 #include <QHttpMultiPart>
 #include <QUrlQuery>
-#include <QElapsedTimer>
+#include <QThread>
 
-VideoHandler::VideoHandler(QObject* parent) : QObject(parent)
+VideoHandler::VideoHandler(QObject* parent) : QObject(parent), manager(nullptr), m_uploading(false)
 {
 
 }
 
+void VideoHandler::initialize()
+{
+    if(!manager)
+    {
+        manager = new QNetworkAccessManager(this);
+    }
+}
 
 void VideoHandler::enqueueUpload(const QString& videoPath)
 {
     m_uploadQueue.enqueue(videoPath);
 
-    qDebug() << "[VideoHandler] queued: " << videoPath
-             << "queue size = " << m_uploadQueue.size();
 
     if(m_uploading)
     {
@@ -40,7 +45,8 @@ void VideoHandler::startNextUpload()
     }
 
     currentVideoPath = m_uploadQueue.dequeue();
-    qDebug() << "[VideoHandler] start upload" << currentVideoPath;
+
+    Q_ASSERT(manager);
 
     uploadVideo(currentVideoPath);
 }
@@ -50,7 +56,7 @@ void VideoHandler::requestHealty()
     QUrl url(HEALTH_ENDPOINT);
     QNetworkRequest req(url);
 
-    manager.get(req);
+    manager->get(req);
 }
 
 void VideoHandler::getModel()
@@ -58,7 +64,7 @@ void VideoHandler::getModel()
     QUrl url(MODEL_ENDPOINT);
     QNetworkRequest req(url);
 
-    QNetworkReply* reply = manager.get(req);
+    QNetworkReply* reply = manager->get(req);
 
     QObject::connect(reply, &QNetworkReply::finished, [reply, this](){
         QByteArray data = reply->readAll();
@@ -86,7 +92,7 @@ void VideoHandler::getFiles()
     query.addQueryItem("purpose", "vision");
     url.setQuery(query);
 
-    QNetworkReply* reply = manager.get(req);
+    QNetworkReply* reply = manager->get(req);
 
     QObject::connect(reply, &QNetworkReply::finished, [reply, this](){
         QByteArray data = reply->readAll();
@@ -103,6 +109,18 @@ void VideoHandler::getFiles()
 
 void VideoHandler::uploadVideo(QString videoPath)
 {
+    if (!manager) {
+        qDebug() << "[VideoHandler] manager is null, initialize()";
+        initialize();
+    }
+
+    Q_ASSERT(manager);
+
+    if (!manager)
+    {
+        initialize();
+    }
+
     QFile* video = new QFile(videoPath);
 
     QNetworkRequest req(UPLOAD_FILE_ENDPOINT);
@@ -147,7 +165,7 @@ void VideoHandler::uploadVideo(QString videoPath)
 
     multiPart->append(filePart);
 
-    QNetworkReply* reply = manager.post(req, multiPart);
+    QNetworkReply* reply = manager->post(req, multiPart);
     multiPart->setParent(reply);
 
     connect(reply,
@@ -200,7 +218,7 @@ void VideoHandler::uploadVideo(QString videoPath)
 
 void VideoHandler::summarize()
 {
-    QElapsedTimer *timer = new QElapsedTimer();
+    auto timer = std::make_shared<QElapsedTimer>();
     timer->start();
 
 
@@ -227,7 +245,7 @@ void VideoHandler::summarize()
     QNetworkRequest req(url);
     req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
 
-    QNetworkReply *reply = manager.post(req, data);
+    QNetworkReply *reply = manager->post(req, data);
 
     qDebug() << "wating for summarize";
 
@@ -240,7 +258,7 @@ void VideoHandler::summarize()
                            << reply->errorString();
             });
 
-    connect(reply, &QNetworkReply::finished, [reply, &timer, this](){
+    connect(reply, &QNetworkReply::finished, [reply, timer, this](){
 
         QVariant statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute);
         QVariant reason = reply->attribute(QNetworkRequest::HttpReasonPhraseAttribute);
@@ -266,7 +284,6 @@ void VideoHandler::summarize()
             emit uploadFailed(currentVideoPath, err);
 
             reply->deleteLater();
-            delete timer;
             startNextUpload();
             return;
         }
@@ -276,7 +293,6 @@ void VideoHandler::summarize()
 
         qDebug() << "Completed SUMMARIZE";
         reply->deleteLater();
-        delete timer;
 
         qna();
     });
@@ -305,7 +321,7 @@ void VideoHandler::qna()
     QNetworkRequest req(url);
     req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
 
-    QNetworkReply *reply = manager.post(req, data);
+    QNetworkReply *reply = manager->post(req, data);
 
     qDebug() << "wating for Q&A";
 

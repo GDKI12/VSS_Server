@@ -15,7 +15,7 @@ class VideoServer : public QObject
     Q_OBJECT
 
 public:
-    explicit VideoServer(quint16 port, QObject *parent = nullptr);
+    explicit VideoServer(QString name, quint16 port, QObject *parent = nullptr);
     ~VideoServer();
 
 private slots:
@@ -28,6 +28,8 @@ private:
         QProcess *ffmpeg = nullptr;
         QString savePath;
         quint64 receivedBytes = 0;
+        QDateTime startTime;
+        QDateTime endTime;
     };
 
     void startFfmpegForClient(QTcpSocket *socket, ClientContext *ctx);
@@ -37,6 +39,7 @@ private:
     VideoHandler* handler = nullptr;
     QThread* uploadThread = nullptr;
     quint16 m_port = 0;
+    QString name;
 };
 
 

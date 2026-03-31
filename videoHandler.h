@@ -6,7 +6,7 @@
 #include <QMutex>
 #include <QMutexLocker>
 #include <QQueue>
-
+#include <QElapsedTimer>
 const QString VSS_URL = "http://localhost:8100";
 
 const QString HEALTH_ENDPOINT = VSS_URL + "/health/ready";
@@ -37,15 +37,15 @@ private:
 
 public slots:
     void enqueueUpload(const QString&);
+    void initialize();
 
 signals:
     void uploadFinished(const QString& videoPath, const QString& videoId);
     void uploadFailed(const QString& videoPath, const QString& reson);
 
 private:
-    QNetworkAccessManager manager;
+    QNetworkAccessManager* manager = nullptr;
     QString dirPath;
-
     QString modelId;
     QString videoId;
     QString currentVideoPath;

@@ -4,8 +4,8 @@
 #include <QDir>
 #include <QFileInfo>
 
-VideoServer::VideoServer(quint16 port, QObject *parent)
-    : QObject(parent), m_port(port)
+VideoServer::VideoServer(QString name, quint16 port, QObject *parent)
+    : QObject(parent), m_port(port), name(name)
 {
     uploadThread = new QThread(this);
     handler = new VideoHandler();
@@ -29,6 +29,7 @@ VideoServer::VideoServer(quint16 port, QObject *parent)
             });
 
     uploadThread->start();
+    QMetaObject::invokeMethod(handler, "initialize", Qt::QueuedConnection);
 
     connect(&m_server, &QTcpServer::newConnection,
             this, &VideoServer::onNewConnection);
@@ -89,17 +90,12 @@ void VideoServer::startFfmpegForClient(QTcpSocket *socket, ClientContext *ctx)
     ctx->ffmpeg = new QProcess(this);
     ctx->ffmpeg->setProcessChannelMode(QProcess::MergedChannels);
 
-    connect(ctx->ffmpeg, &QProcess::readyReadStandardOutput, this, [ctx]() {
-        qDebug() << "[ffmpeg]" << ctx->ffmpeg->readAllStandardOutput();
-    });
 
     connect(ctx->ffmpeg,
             static_cast<void(QProcess::*)(int, QProcess::ExitStatus)>(&QProcess::finished),
             this,
             [ctx](int exitCode, QProcess::ExitStatus status) {
                 qDebug() << "ffmpeg finished:"
-                         << "exitCode =" << exitCode
-                         << "status =" << status
                          << "savePath =" << ctx->savePath;
             });
 
@@ -150,6 +146,11 @@ void VideoServer::onReadyRead()
         return;
 
     ClientContext *ctx = m_clients.value(socket);
+
+    if (!ctx->startTime.isValid()) {
+        ctx->startTime = QDateTime::currentDateTime();
+    }
+
     if (!ctx || !ctx->ffmpeg)
         return;
 
@@ -204,6 +205,9 @@ void VideoServer::onDisconnected()
 
     if (m_clients.contains(socket)) {
         ClientContext *ctx = m_clients.take(socket);
+        ctx->endTime = QDateTime::currentDateTime();
+
+        qint64 elapsedMs = ctx->startTime.msecsTo(ctx->endTime);
 
         if (ctx->ffmpeg) {
             if (ctx->ffmpeg->state() == QProcess::Running) {
@@ -218,8 +222,10 @@ void VideoServer::onDisconnected()
             }
 
             if (QFileInfo::exists(ctx->savePath) && QFileInfo(ctx->savePath).size() > 0) {
+                qDebug() << "[ " << name << " ]";
                 qDebug() << "Saved mp4:" << ctx->savePath
-                         << "size =" << QFileInfo(ctx->savePath).size();
+                         << "size =" << QFileInfo(ctx->savePath).size() << "bytes"
+                         << "upload time = " << (double)elapsedMs << "msec";
 
                 QMetaObject::invokeMethod(handler, "enqueueUpload", Qt::QueuedConnection, Q_ARG(QString, ctx->savePath));
             } else {
