@@ -138,6 +138,9 @@ void VideoHandler::uploadVideo(const QString& videoPath)
 
     QFile* video = new QFile(videoPath);
 
+    QNetworkRequest req(UPLOAD_FILE_ENDPOINT);
+    QHttpMultiPart* multiPart = new QHttpMultiPart(QHttpMultiPart::FormDataType);
+
     if (!video->open(QIODevice::ReadOnly))
     {
         emit uploadFailed(videoPath, "file open failed");
@@ -146,32 +149,43 @@ void VideoHandler::uploadVideo(const QString& videoPath)
 
     QFileInfo info(*video);
 
-    QNetworkRequest req;
-    req.setUrl(QUrl(UPLOAD_FILE_ENDPOINT));
-
-    QHttpMultiPart* multiPart = new QHttpMultiPart(QHttpMultiPart::FormDataType);
-
     QHttpPart purposePart;
     purposePart.setHeader(QNetworkRequest::ContentDispositionHeader,
-                          "form-data; name=\"purpose\"");
+                         QVariant("form-data; name=\"purpose\""));
     purposePart.setBody("vision");
+
     multiPart->append(purposePart);
 
-    QHttpPart filePart;
-    filePart.setHeader(QNetworkRequest::ContentDispositionHeader,
-                       QString("form-data; name=\"file\"; filename=\"%1\"").arg(info.fileName()));
-    filePart.setBodyDevice(video);
+    QHttpPart mediaPart;
+    mediaPart.setHeader(QNetworkRequest::ContentDispositionHeader,
+                         QVariant("form-data; name=\"media_type\""));
+    mediaPart.setBody("video");
+    multiPart->append(mediaPart);
 
+    QHttpPart filePart;
+    QString disposition = QString("form-data; name=\"file\"; filename=\"%1\"").arg(info.fileName());
+    filePart.setHeader(QNetworkRequest::ContentDispositionHeader, disposition);
+    filePart.setBodyDevice(video);
     video->setParent(multiPart);
+
     multiPart->append(filePart);
 
     QNetworkReply* reply = manager->post(req, multiPart);
     multiPart->setParent(reply);
 
+    connect(reply,
+                SIGNAL(error(QNetworkReply::NetworkError)),
+                this,
+                SLOT());
+
     connect(reply, &QNetworkReply::finished, [reply, this, videoPath]() {
 
         QByteArray res = reply->readAll();
-        qDebug() << "[UPLOAD]" << res;
+
+        qDebug() << "[UPLOAD RESPONSE]" << res;
+        qDebug() << "[HTTP STATUS]"
+                 << reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+
 
         if (reply->error() != QNetworkReply::NoError)
         {
@@ -183,6 +197,8 @@ void VideoHandler::uploadVideo(const QString& videoPath)
 
         videoId = QJsonDocument::fromJson(res).object()["id"].toString();
 
+        qDebug() << "[UPLOAD SUCCESS] videoId =" << videoId;
+
         summarize(videoPath);
 
         reply->deleteLater();
@@ -192,36 +208,82 @@ void VideoHandler::uploadVideo(const QString& videoPath)
 // ================= summarize =================
 void VideoHandler::summarize(const QString& videoPath)
 {
+    auto timer = std::make_shared<QElapsedTimer>();
+        timer->start();
+
+
+    QJsonObject prompts;
+    prompts["vlm_prompt"] = "Write a concise and clear dense caption for the provided warehouse video, focusing on irregular or hazardous events such as boxes falling, workers not wearing PPE, workers falling, workers taking photographs, workers chitchatting, forklift stuck, etc. Start and end each sentence with a time stamp.";
+    prompts["summarization"] = "You should summarize the following events of a warehouse in the format start_time:end_time:caption. For start_time and end_time use . to seperate seconds, minutes, hours. If during a time segment only regular activities happen, then ignore them, else note any irregular activities in detail. The output should be bullet points in the format start_time:end_time: detailed_event_description. Don't return anything else except the bullet points.";
+    prompts["aggregation"] = "You are a warehouse monitoring system. Given the caption in the form start_time:end_time: caption, Aggregate the following captions in the format start_time:end_time:event_description. If the event_description is the same as another event_description, aggregate the captions in the format start_time1:end_time1,...,start_timek:end_timek:event_description. If any two adjacent end_time1 and start_time2 is within a few tenths of a second, merge the captions in the format start_time1:end_time2. The output should only contain bullet points.  Cluster the output into Unsafe Behavior, Operational Inefficiencies, Potential Equipment Damage and Unauthorized Personnel";
+
     QJsonObject payload;
     payload["id"] = videoId;
-    payload["prompt"] = vlmPrompt;
-    payload["caption_summarization_prompt"] = captionSummari;
-    payload["summary_aggregation_prompt"] = aggre;
+    payload["prompt"] = prompts["vlm_prompt"].toString();
+    payload["caption_summarization_prompt"] = prompts["summarization"].toString();
+    payload["summary_aggregation_prompt"] = prompts["aggregation"].toString();
     payload["model"] = MODEL_ID;
+    payload["chunk_duration"] = 10;
+    payload["chunk_overlap_duration"] = 0;
     payload["summarize"] = true;
+    payload["enable_chat"] = true;
 
-    QByteArray data = QJsonDocument(payload).toJson();
+    QJsonDocument doc = QJsonDocument(payload);
+    QByteArray data = doc.toJson(QJsonDocument::Compact);
 
     QNetworkRequest req = makeRequest(SUMMARIZE_ENDPOINT);
 
     QNetworkReply* reply = manager->post(req, data);
 
-    connect(reply, &QNetworkReply::finished, [reply, this, videoPath]() {
+    qDebug() << "wating for summarize";
 
-        qDebug() << "[SUMMARIZE]" << reply->readAll();
+    connect(reply,
+            static_cast<void(QNetworkReply::*)(QNetworkReply::NetworkError)>(&QNetworkReply::error),
+            this,
+            [reply](QNetworkReply::NetworkError code) {
+                qWarning() << "Network error occurred:"
+                           << code
+                           << reply->errorString();
+            });
 
-        if (reply->error() != QNetworkReply::NoError)
+    connect(reply, &QNetworkReply::finished, [reply, timer, videoPath, this](){
+
+        QVariant statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute);
+        QVariant reason = reply->attribute(QNetworkRequest::HttpReasonPhraseAttribute);
+
+        QByteArray responseData = reply->readAll();
+
+        if(reply->error() != QNetworkReply::NoError)
         {
-            emit uploadFailed(videoPath, reply->errorString());
+            int httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+            qWarning() << "Upload error:"
+                       << "networkError = " << reply->error()
+                       << "errorString = " << reply->errorString()
+                       << "httpStatus = " << httpStatus
+                       << "reason = " << reason;
+
+            QString err = QString("Summarize error: networkError=%1 errorString=%2 httpStatus=%3 reason=%4")
+                                          .arg(reply->error())
+                                          .arg(reply->errorString())
+                                          .arg(httpStatus)
+                                          .arg(reason.toString());
+
+            qWarning() << err;
+            emit uploadFailed(currentVideoPath, err);
+
             reply->deleteLater();
             startNextUpload();
             return;
         }
 
-        qna(videoPath);
+        quint64 inferTime = timer->elapsed();
+        qDebug() << "Inference Time : " << int(inferTime);
 
+        qDebug() << "Completed SUMMARIZE";
         reply->deleteLater();
-    });
+
+        qna(videoPath);
+        });
 }
 
 // ================= qna =================

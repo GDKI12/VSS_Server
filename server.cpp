@@ -285,10 +285,12 @@ void VideoServer::onDisconnected()
                          << "size =" << fi.size() << "bytes"
                          << "elapsed =" << elapsedMs << "ms";
 
-                QMetaObject::invokeMethod(handler,
-                                          "enqueueUpload",
-                                          Qt::QueuedConnection,
-                                          Q_ARG(QString, ctx->savePath));
+                const QString savePath = ctx->savePath;
+                QMetaObject::invokeMethod(
+                            handler,
+                            [this, savePath](){
+                    handler->enqueueUpload(savePath);
+                }, Qt::QueuedConnection);
             } else {
                 qWarning() << "Saved file missing or empty:" << ctx->savePath;
             }
