@@ -7,16 +7,21 @@
 #include <QMutexLocker>
 #include <QQueue>
 #include <QElapsedTimer>
+
+
+// ================= URL =================
 const QString VSS_URL = "http://localhost:8100";
 
-const QString HEALTH_ENDPOINT = VSS_URL + "/health/ready";
-const QString MODEL_ENDPOINT = VSS_URL + "/models";
+const QString HEALTH_ENDPOINT      = VSS_URL + "/health/ready";
+const QString MODEL_ENDPOINT       = VSS_URL + "/models";
 const QString UPLOAD_FILE_ENDPOINT = VSS_URL + "/files";
-const QString GET_FILES_ENDPOINT = VSS_URL + "/files";
-const QString SUMMARIZE_ENDPOINT = VSS_URL + "/summarize";
-const QString QnA_ENDPOINT = VSS_URL + "/chat/completions";
+const QString GET_FILES_ENDPOINT   = VSS_URL + "/files";
+const QString SUMMARIZE_ENDPOINT   = VSS_URL + "/summarize";
+const QString QNA_ENDPOINT         = VSS_URL + "/chat/completions";
 
-const QString MODEL_ID = "Cosmos-Reason2-2B";
+const QString MODEL_ID = "Cosmos-Reason2-8B";
+
+const QString CONFIG_FILE = "/home/cscho/VSS_Server/config/config.toml";
 
 class VideoHandler : public QObject
 {
@@ -24,33 +29,41 @@ class VideoHandler : public QObject
 
 public:
     explicit VideoHandler(QObject* parent = nullptr);
-    void requestHealty();
-    void uploadVideo(QString);
-    void summarize();
-    void qna();
+
+    void initialize();
+
+    void requestHealth();
     void getModel();
     void getFiles();
-    void request(QString);
 
-private:
-    void startNextUpload();
-
-public slots:
-    void enqueueUpload(const QString&);
-    void initialize();
+    void enqueueUpload(const QString& videoPath);
 
 signals:
     void uploadFinished(const QString& videoPath, const QString& videoId);
-    void uploadFailed(const QString& videoPath, const QString& reson);
+    void uploadFailed(const QString& videoPath, const QString& reason);
+    void requestToSend(const QString& videoPath, const QString& answer);
 
 private:
-    QNetworkAccessManager* manager = nullptr;
-    QString dirPath;
-    QString modelId;
-    QString videoId;
-    QString currentVideoPath;
+    void startNextUpload();
+    void uploadVideo(const QString& videoPath);
+    void summarize(const QString& videoPath);
+    void qna(const QString& videoPath);
+
+    QNetworkRequest makeRequest(const QString& url);
+
+private:
+    QNetworkAccessManager* manager;
 
     QQueue<QString> m_uploadQueue;
-    bool m_uploading = false;
+    bool m_uploading;
 
+    QString currentVideoPath;
+    QString videoId;
+    QString modelId;
+
+    QString vlmPrompt;
+    QString captionSummari;
+    QString aggre;
+    QString query;
 };
+

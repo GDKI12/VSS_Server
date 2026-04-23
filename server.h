@@ -8,6 +8,12 @@
 #include <QProcess>
 #include <QThread>
 #include <QString>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QDateTime>
+#include <QDebug>
+#include <QDir>
+#include <QFileInfo>
 #include "videoHandler.h"
 
 class VideoServer : public QObject
@@ -22,6 +28,12 @@ private slots:
     void onNewConnection();
     void onReadyRead();
     void onDisconnected();
+    void sendToClient(const QString& videoPath, const QString& answer);
+
+    // meata data
+    void onMetaConnection();
+    void onMetaRead();
+
 
 private:
     struct ClientContext {
@@ -40,6 +52,13 @@ private:
     QThread* uploadThread = nullptr;
     quint16 m_port = 0;
     QString name;
+
+    // meta data
+    QTcpServer m_metaServer;
+    QHash<QString, QQueue<QJsonObject>> m_metaByIp;
+
+    QTcpSocket* metaSocket;
+
 };
 
 

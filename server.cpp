@@ -1,8 +1,4 @@
 #include "server.h"
-#include <QDateTime>
-#include <QDebug>
-#include <QDir>
-#include <QFileInfo>
 
 VideoServer::VideoServer(QString name, quint16 port, QObject *parent)
     : QObject(parent), m_port(port), name(name)
@@ -28,21 +24,53 @@ VideoServer::VideoServer(QString name, quint16 port, QObject *parent)
                            << "reason =" << reason;
             });
 
+    connect(handler, &VideoHandler::requestToSend, this, &VideoServer::sendToClient);
+
     uploadThread->start();
     QMetaObject::invokeMethod(handler, "initialize", Qt::QueuedConnection);
 
     connect(&m_server, &QTcpServer::newConnection,
             this, &VideoServer::onNewConnection);
 
-    if (!m_server.listen(QHostAddress::Any, port)) {
-        qFatal("Server listen failed.");
-    }
+    connect(&m_metaServer, &QTcpServer::newConnection, this, &VideoServer::onMetaConnection);
 
-    qDebug() << "Server listening on port" << port;
+    if (!m_server.listen(QHostAddress::Any, port))
+        qCritical() << "Stream server listen failed.";
+
+    qDebug() << "Stream server " << name << "listening on port " << port;
+
+    if(!m_metaServer.listen(QHostAddress::Any, port + 100))
+        qCritical() << "meta info server listen failed.";
+
+    qDebug() << "Meta server " << name << " listening on port " << port + 100;
+
 
     QDir().mkpath("/home/cscho/vss");
 }
 
+void VideoServer::sendToClient(const QString& videoPath, const QString& answer)
+{
+    QJsonObject obj;
+    QString dirName;
+
+    int pos = videoPath.indexOf("_cam");
+    if(pos != -1)
+        dirName = videoPath.left(pos);
+
+
+    obj["fileName"] = dirName.split('/').last();
+    obj["answer"] = answer;
+
+    QByteArray data = QJsonDocument(obj).toJson(QJsonDocument::Compact);
+    data.append("\n");
+
+    if (metaSocket && metaSocket->state() == QAbstractSocket::ConnectedState)
+    {
+        metaSocket->write(data);
+        metaSocket->flush();
+    }
+
+}
 VideoServer::~VideoServer()
 {
     for (auto it = m_clients.begin(); it != m_clients.end(); ++it) {
@@ -67,6 +95,7 @@ VideoServer::~VideoServer()
 
     if(uploadThread)
     {
+        handler->deleteLater();
         uploadThread->quit();
         uploadThread->wait();
 
@@ -81,22 +110,27 @@ void VideoServer::startFfmpegForClient(QTcpSocket *socket, ClientContext *ctx)
     QString timestamp = QDateTime::currentDateTime().toString("yyyyMMdd_hhmmss_zzz");
 
     QString peerIp = socket->peerAddress().toString();
+
+    QString fileName;
+
+    if(m_metaByIp.contains(peerIp) && !m_metaByIp[peerIp].isEmpty())
+    {
+        QJsonObject meta = m_metaByIp[peerIp].dequeue();
+
+        fileName = meta["videoName"].toString();
+    }
+
     peerIp.replace(":", "_");
 
-    ctx->savePath = QString("/home/cscho/vss/%1_%2.mp4")
-            .arg(name)
-            .arg(timestamp);
+    QString dirPath = QString("/home/cscho/vss/%1").arg(fileName);
+
+    QDir().mkdir("/home/cscho/vss");
+
+    ctx->savePath = dirPath;
 
     ctx->ffmpeg = new QProcess(this);
     ctx->ffmpeg->setProcessChannelMode(QProcess::SeparateChannels);
 
-//    connect(ctx->ffmpeg, &QProcess::readyReadStandardError, this, [ctx](){
-//        const QByteArray err = ctx->ffmpeg->readAllStandardError();
-//        if(!err.isEmpty())
-//        {
-//            qCritical() << "[ffmpeg]" << QString::fromLocal8Bit(err);
-//        }
-//    });
 
     connect(ctx->ffmpeg,
             static_cast<void(QProcess::*)(int, QProcess::ExitStatus)>(&QProcess::finished),
@@ -267,4 +301,45 @@ void VideoServer::onDisconnected()
     }
 
     socket->deleteLater();
+}
+
+void VideoServer::onMetaConnection()
+{
+    while(m_metaServer.hasPendingConnections())
+    {
+        metaSocket = m_metaServer.nextPendingConnection();
+
+        connect(metaSocket, &QTcpSocket::readyRead, this, &VideoServer::onMetaRead);
+        connect(metaSocket, &QTcpSocket::disconnected, metaSocket, &QTcpSocket::deleteLater);
+
+        qDebug() << "Client connected:"
+                 << metaSocket->peerAddress().toString()
+                 << metaSocket->peerPort()
+                 << "localPort =" << metaSocket->localPort();
+    }
+}
+
+void VideoServer::onMetaRead()
+{
+    QTcpSocket* socket = qobject_cast<QTcpSocket*>(sender());
+
+    if(!socket)
+        return;
+
+    QByteArray data = socket->readAll();
+    if(data.isEmpty())
+        return;
+
+    QJsonDocument doc = QJsonDocument::fromJson(data);
+    if(!doc.isObject())
+        return;
+
+    QJsonObject obj = doc.object();
+    QString ip = socket->peerAddress().toString();
+
+    m_metaByIp[ip].enqueue(obj);
+
+    qDebug() << "[META]" << ip
+                 << "videoName:" << obj["videoName"].toString()
+                 << "queue size:" << m_metaByIp[ip].size();
 }

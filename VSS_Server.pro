@@ -15,15 +15,23 @@ DEFINES += QT_DEPRECATED_WARNINGS
 # You can also select to disable deprecated APIs only up to a certain version of Qt.
 #DEFINES += QT_DISABLE_DEPRECATED_BEFORE=0x060000    # disables all the APIs deprecated before Qt 6.0.0
 
+### opencv-4.5.1
+INCLUDEPATH += /usr/include/opencv4
+
+### toml11
+INCLUDEPATH += /home/cscho/3rdparty/toml11
+
+LIBS += -lopencv_core \
+        -lopencv_imgproc \
+        -lopencv_imgcodecs \
+        -lopencv_highgui
+
 SOURCES += \
     main.cpp \
-    mainwindow.cpp \
     server.cpp \
     videoHandler.cpp \
 
 HEADERS += \
-    mainwindow.h \
-    protocol.h \
     videoHandler.h \
     server.h
 
