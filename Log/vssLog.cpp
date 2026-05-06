@@ -6,12 +6,6 @@ VSSLog::VSSLog(const QString& rootPath, QObject* parent) : QObject(parent)
     QString date = QDateTime::currentDateTime().toString("yyyyMMdd");
     QString logPath = QString("%1/%2.json").arg(rootPath).arg(date);
     initWriter(logPath);
-
-    qDebug() << "";
-//    connect(this, &VSSLog::outInfo, this, &VSSLog::onWrite);
-//    connect(this, &VSSLog::outWarn, this, &VSSLog::onWrite);
-//    connect(this, &VSSLog::outError, this, &VSSLog::onWrite);
-
 }
 
 void VSSLog::initWriter(const QString& path)
@@ -23,7 +17,6 @@ void VSSLog::initWriter(const QString& path)
         if(logFile.open(QIODevice::WriteOnly))
        {
            logFile.close();
-//           qDebug() << "file created";
        }
     }
 
@@ -82,30 +75,30 @@ void VSSLog::addLog(const QString& sensorName, const QString& answer)
 
 void VSSLog::write(const QJsonObject& obj)
 {
-    logFile.setFileName("/home/cscho/vss/log.json");
     if(!logFile.open(QIODevice::ReadOnly))
     {
-        qCritical() << "[ERROR] Fail to open log file";
         return;
     }
 
     QByteArray data = logFile.readAll();
-
     logFile.close();
 
     QJsonDocument doc = QJsonDocument::fromJson(data);
-    QJsonObject rootObj = doc.object();
 
+    if(!doc.isObject())
+    {
+        return;
+    }
+    QJsonObject rootObj = doc.object();
 
     QJsonArray scenes = rootObj["scenes"].toArray();
     scenes.append(obj);
 
     rootObj["scenes"] = scenes;
 
-    QJsonDocument newDoc(rootObj);
+    QJsonDocument newDoc = QJsonDocument(rootObj);
 
     logFile.open(QIODevice::WriteOnly | QIODevice::Truncate);
-
     logFile.write(newDoc.toJson(QJsonDocument::Indented));
     logFile.close();
 

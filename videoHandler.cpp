@@ -354,10 +354,10 @@ void VideoHandler::onWrite(const QString& content, LogLevel level)
     QString timestamp = QDateTime::currentDateTime().toString("yyyyMMdd_hhmmss.zzz");
 
     if(level == LogLevel::INFO)
-        qDebug() << timestamp << "[INFO] " << content;
+        qDebug().noquote() << timestamp << "[INFO] " << content;
     else if(level == LogLevel::WARN)
-        qWarning() << timestamp << "[WARN] " << content;
+        qWarning().noquote() << timestamp << "[WARN] " << content;
     else if(level == LogLevel::ERROR)
-        qCritical() << timestamp << "[ERROR] " << content;
+        qCritical().noquote() << timestamp << "[ERROR] " << content;
 
 }
