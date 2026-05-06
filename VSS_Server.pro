@@ -27,11 +27,13 @@ LIBS += -lopencv_core \
         -lopencv_highgui
 
 SOURCES += \
+    Log/vssLog.cpp \
     main.cpp \
     server.cpp \
     videoHandler.cpp \
 
 HEADERS += \
+    Log/vssLog.h \
     videoHandler.h \
     server.h
 

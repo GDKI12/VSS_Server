@@ -3,46 +3,68 @@
 VideoServer::VideoServer(QString name, quint16 port, QObject *parent)
     : QObject(parent), m_port(port), name(name)
 {
+
     uploadThread = new QThread(this);
     handler = new VideoHandler();
     handler->moveToThread(uploadThread);
 
+    QString logPath = handler->getLogPath();
+    logger = new VSSLog(logPath);
+
+    // log event
+    connect(this, &VideoServer::requestLog, logger, &VSSLog::addLog);
+
+    // upload thread delete event
     connect(uploadThread, &QThread::finished,
             handler, &QObject::deleteLater);
 
+    // upload event
     connect(handler, &VideoHandler::uploadFinished,
-            this, [](const QString &videoPath, const QString &videoId) {
-                qDebug() << "[Server] upload finished:"
-                         << "path =" << videoPath
-                         << "videoId =" << videoId;
+            this, [this](const QString &videoPath, const QString &videoId) {
+//                qDebug() << QString("Success to upload, videoPath = %1, videoId = %2").arg(videoPath).arg(videoId);
+                emit handler->outInfo(QString("Success to upload, videoPath = %1, videoId = %2").arg(videoPath).arg(videoId));
             });
 
+    // upload fail event
     connect(handler, &VideoHandler::uploadFailed,
-            this, [](const QString &videoPath, const QString &reason) {
-                qWarning() << "[Server] upload failed:"
-                           << "path =" << videoPath
-                           << "reason =" << reason;
+            this, [this](const QString &videoPath, const QString &reason) {
+//                qWarning() << "[INFO] Fail to upload video"
+//                           << "path =" << videoPath
+//                           << "reason =" << reason;
+
+                emit handler->outWarn(QString("Fail to upload video path = %1 reason = %2")
+                                      .arg(videoPath).arg(reason));
             });
 
+    // sent to client event
     connect(handler, &VideoHandler::requestToSend, this, &VideoServer::sendToClient);
 
     uploadThread->start();
     QMetaObject::invokeMethod(handler, "initialize", Qt::QueuedConnection);
 
+    // video socket new connection event
     connect(&m_server, &QTcpServer::newConnection,
             this, &VideoServer::onNewConnection);
 
+    // meta info socket new connection event
     connect(&m_metaServer, &QTcpServer::newConnection, this, &VideoServer::onMetaConnection);
 
     if (!m_server.listen(QHostAddress::Any, port))
-        qCritical() << "Stream server listen failed.";
+        emit handler->outError("Stream server listen failed.");
+//        qCritical() << "[ERROR] Stream server listen failed.";
 
-    qDebug() << "Stream server " << name << "listening on port " << port;
+    emit handler->outInfo(QString("Stream server %1 listening on port %2").arg(name).arg(port));
+//    qDebug() << "[INFO] Stream server " << name << "listening on port " << port;
 
     if(!m_metaServer.listen(QHostAddress::Any, port + 100))
-        qCritical() << "meta info server listen failed.";
+    {
+//        qCritical() << "meta info server listen failed.";
+        emit handler->outError("meta info server listen failed.");
+    }
 
-    qDebug() << "Meta server " << name << " listening on port " << port + 100;
+//    qDebug() << "[INFO] Meta server   " << name << "listening on port " << port + 100;
+    emit handler->outInfo(QString("Meta server   %1 listening on port %2")
+                     .arg(name).arg(port+100));
 
 
     QDir().mkpath("/home/cscho/vss");
@@ -51,14 +73,19 @@ VideoServer::VideoServer(QString name, quint16 port, QObject *parent)
 void VideoServer::sendToClient(const QString& videoPath, const QString& answer)
 {
     QJsonObject obj;
+    QString dirPath;
     QString dirName;
 
     int pos = videoPath.indexOf("_cam");
     if(pos != -1)
-        dirName = videoPath.left(pos);
+        dirPath = videoPath.left(pos);
 
+    dirName = dirPath.split('/').last();
 
-    obj["fileName"] = dirName.split('/').last();
+    // request write log
+    emit requestLog(dirName, answer);
+
+    obj["fileName"] = dirName;
     obj["answer"] = answer;
 
     QByteArray data = QJsonDocument(obj).toJson(QJsonDocument::Compact);
@@ -135,12 +162,12 @@ void VideoServer::startFfmpegForClient(QTcpSocket *socket, ClientContext *ctx)
     connect(ctx->ffmpeg,
             static_cast<void(QProcess::*)(int, QProcess::ExitStatus)>(&QProcess::finished),
             this,
-            [ctx](int exitCode, QProcess::ExitStatus status)
+            [this](int exitCode, QProcess::ExitStatus status)
             {
-                qDebug() << "ffmpeg finished:"
-                                         << "exitCode =" << exitCode
-                                         << "status =" << status
-                                         << "savePath =" << ctx->savePath;
+                emit handler->outInfo(QString("Finish ffmpeg exitCode = %1 status = %2").arg(exitCode).arg(status));
+//                qDebug() << "[INFO] Finish ffmpeg"
+//                                         << "exitCode =" << exitCode
+//                                         << "status =" << status;
             });
 
     QStringList args;
@@ -160,7 +187,8 @@ void VideoServer::startFfmpegForClient(QTcpSocket *socket, ClientContext *ctx)
 
     if(!ctx->ffmpeg->waitForStarted(3000))
     {
-        qWarning() << "Fail to start ffmpeg for " << ctx->savePath << " " << ctx->ffmpeg->errorString();
+//        qWarning() << "[WARN] Fail to start ffmpeg";
+        emit handler->outError("Fail to start ffmpeg");
     }
 
 }
@@ -172,16 +200,21 @@ void VideoServer::onNewConnection()
         QTcpSocket *socket = m_server.nextPendingConnection();
 
         auto *ctx = new ClientContext;
-        ctx->ffmpeg = nullptr;   // 명시적으로 초기화 권장
+        ctx->ffmpeg = nullptr;
         m_clients.insert(socket, ctx);
 
         connect(socket, &QTcpSocket::readyRead, this, &VideoServer::onReadyRead);
         connect(socket, &QTcpSocket::disconnected, this, &VideoServer::onDisconnected);
 
-        qDebug() << "Client connected:"
-                 << socket->peerAddress().toString()
-                 << socket->peerPort()
-                 << "localPort =" << socket->localPort();
+//        qDebug() << "[INFO] Client connected:"
+//                 << socket->peerAddress().toString()
+//                 << socket->peerPort()
+//                 << "localPort =" << socket->localPort();
+
+        emit handler->outInfo(QString("Client connected: %1 %2 localPort = %3")
+                              .arg(socket->peerAddress().toString())
+                              .arg(socket->peerPort())
+                              .arg(socket->localPort()));
     }
 }
 
@@ -213,8 +246,11 @@ void VideoServer::onReadyRead()
         startFfmpegForClient(socket, ctx);
 
         if (!ctx->ffmpeg || ctx->ffmpeg->state() != QProcess::Running) {
-            qWarning() << "ffmpeg is not running for client"
-                       << socket->peerAddress().toString();
+//            qWarning() << "ffmpeg is not running for client"
+//                       << socket->peerAddress().toString();
+
+            emit handler->outWarn(QString("ffmpeg is not running for client %1")
+                                  .arg(socket->peerAddress().toString()));
             return;
         }
     }
@@ -227,15 +263,19 @@ void VideoServer::onReadyRead()
         qint64 n = ctx->ffmpeg->write(data.constData() + totalWritten,
                                       data.size() - totalWritten);
         if (n < 0) {
-            qWarning() << "Failed to write stream to ffmpeg:"
-                       << ctx->ffmpeg->errorString();
+            emit handler->outWarn(QString("Failed to write stream to ffmpeg: %1")
+                                  .arg(ctx->ffmpeg->errorString()));
+//            qWarning() << "Failed to write stream to ffmpeg:"
+//                       << ctx->ffmpeg->errorString();
             return;
         }
 
         if (n == 0) {
             if (!ctx->ffmpeg->waitForBytesWritten(3000)) {
-                qWarning() << "ffmpeg stdin flush timeout:"
-                           << ctx->ffmpeg->errorString();
+                emit handler->outWarn(QString("ffmpeg stdin flush timeout: %1")
+                                      .arg(ctx->ffmpeg->errorString()));
+//                qWarning() << "ffmpeg stdin flush timeout:"
+//                           << ctx->ffmpeg->errorString();
                 return;
             }
             continue;
@@ -251,12 +291,19 @@ void VideoServer::onDisconnected()
     if (!socket)
         return;
 
-    qDebug() << "remaining on disconnect =" << socket->bytesAvailable();
+//    qDebug() << "[INFO] Remaining on disconnect : " << socket->bytesAvailable();
+    emit handler->outInfo(QString("Remaining on disconnect : %1")
+                          .arg(socket->bytesAvailable()));
 
-    qDebug() << "Client disconnected:"
-             << socket->peerAddress().toString()
-             << socket->peerPort()
-             << "localPort =" << socket->localPort();
+//    qDebug() << "[INFO] Client disconnected:"
+//             << socket->peerAddress().toString()
+//             << socket->peerPort()
+//             << "localPort =" << socket->localPort();
+
+    emit handler->outInfo(QString("Client disconnected: %1 %2 localPort = %3")
+                          .arg(socket->peerAddress().toString())
+                          .arg(socket->peerPort())
+                          .arg(socket->localPort()));
 
     if (m_clients.contains(socket)) {
         ClientContext *ctx = m_clients.take(socket);
@@ -271,8 +318,9 @@ void VideoServer::onDisconnected()
                 ctx->ffmpeg->closeWriteChannel();
 
                 if (!ctx->ffmpeg->waitForFinished(10000)) {
-                    qWarning() << "ffmpeg did not finish cleanly for"
-                               << ctx->savePath;
+//                    qWarning() << "[WARN] ffmpeg did not finish cleanly for"
+//                               << ctx->savePath;
+                    emit handler->outWarn(QString("ffmpeg did not finish cleanly for %1").arg(ctx->savePath));
                     ctx->ffmpeg->kill();
                     ctx->ffmpeg->waitForFinished(3000);
                 }
@@ -280,10 +328,14 @@ void VideoServer::onDisconnected()
 
             QFileInfo fi(ctx->savePath);
             if (fi.exists() && fi.size() > 0) {
-                qDebug() << "[" << name << "]";
-                qDebug() << "Saved stream:" << ctx->savePath
-                         << "size =" << fi.size() << "bytes"
-                         << "elapsed =" << elapsedMs << "ms";
+//                qDebug() << "[INFO] Saved Video :" << ctx->savePath
+//                         << "size =" << fi.size() << "bytes"
+//                         << "elapsed =" << elapsedMs << "ms";
+
+                emit handler->outInfo(QString("[INFO] Saved Video : %1 size = %2 bytes elapsed = %3 ms")
+                                      .arg(ctx->savePath)
+                                      .arg(fi.size())
+                                      .arg(elapsedMs));
 
                 const QString savePath = ctx->savePath;
                 QMetaObject::invokeMethod(
@@ -292,7 +344,8 @@ void VideoServer::onDisconnected()
                     handler->enqueueUpload(savePath);
                 }, Qt::QueuedConnection);
             } else {
-                qWarning() << "Saved file missing or empty:" << ctx->savePath;
+//                qWarning() << "[WARN] Saved file is  missing or empty :" << ctx->savePath;
+                emit handler->outWarn(QString("Saved file is  missing or empty : %1").arg(ctx->savePath));
             }
 
             delete ctx->ffmpeg;
@@ -313,11 +366,6 @@ void VideoServer::onMetaConnection()
 
         connect(metaSocket, &QTcpSocket::readyRead, this, &VideoServer::onMetaRead);
         connect(metaSocket, &QTcpSocket::disconnected, metaSocket, &QTcpSocket::deleteLater);
-
-        qDebug() << "Client connected:"
-                 << metaSocket->peerAddress().toString()
-                 << metaSocket->peerPort()
-                 << "localPort =" << metaSocket->localPort();
     }
 }
 
@@ -341,7 +389,21 @@ void VideoServer::onMetaRead()
 
     m_metaByIp[ip].enqueue(obj);
 
-    qDebug() << "[META]" << ip
-                 << "videoName:" << obj["videoName"].toString()
-                 << "queue size:" << m_metaByIp[ip].size();
+    QString videoName = obj["videoName"].toString();
+
+    int idx = videoName.indexOf("_cam");
+
+    QString sensorName;
+
+    if(idx != -1)
+        sensorName = videoName.left(idx);
+
+//    qDebug() << "[INFO] Receive Meta data "
+//             << "videoName:" << videoName
+//             << "queue size:" << m_metaByIp[ip].size();
+
+    emit handler->outInfo(QString("Receive Meta data videoName:%1 queue size: %2")
+                          .arg(videoName)
+                          .arg(m_metaByIp[ip].size()));
+
 }

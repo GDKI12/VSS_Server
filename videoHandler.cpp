@@ -1,6 +1,5 @@
 #include "videoHandler.h"
 
-#include <QNetworkReply>
 #include <QUrl>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -12,39 +11,47 @@
 #include <opencv2/opencv.hpp>
 #include <toml.hpp>
 
-// ================= constructor =================
 VideoHandler::VideoHandler(QObject* parent)
     : QObject(parent), manager(nullptr), m_uploading(false)
 {
+    connect(this, &VideoHandler::outInfo, this, &VideoHandler::onWrite);
+    connect(this, &VideoHandler::outWarn, this, &VideoHandler::onWrite);
+    connect(this, &VideoHandler::outError, this, &VideoHandler::onWrite);
+
     auto data = toml::parse(CONFIG_FILE.toStdString());
 
     vlmPrompt      = QString::fromStdString(toml::find<std::string>(data, "Vlm", "content"));
     captionSummari = QString::fromStdString(toml::find<std::string>(data, "Caption", "content"));
     aggre          = QString::fromStdString(toml::find<std::string>(data, "Aggregation", "content"));
     query          = QString::fromStdString(toml::find<std::string>(data, "setting", "query"));
+    logPath        = QString::fromStdString(toml::find<std::string>(data, "setting", "log_path"));
+
+    QDir().mkpath(logPath);
 }
 
-// ================= init =================
+QString VideoHandler::getLogPath()
+{
+    return logPath;
+}
+
 void VideoHandler::initialize()
 {
     if (!manager)
         manager = new QNetworkAccessManager(this);
 }
 
-// ================= request helper =================
 QNetworkRequest VideoHandler::makeRequest(const QString& urlStr)
 {
     QNetworkRequest req;
-    req.setUrl(QUrl(urlStr));  // Qt5 안정 방식
+    req.setUrl(QUrl(urlStr));
 
     req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
 
-    qDebug() << "[REQUEST]" << req.url();
+    emit outInfo(QString("REQUEST >> %1").arg((req.url()).toString()));
 
     return req;
 }
 
-// ================= health =================
 void VideoHandler::requestHealth()
 {
     QNetworkRequest req = makeRequest(HEALTH_ENDPOINT);
@@ -53,13 +60,14 @@ void VideoHandler::requestHealth()
 
     connect(reply, SIGNAL(finished()), this, SLOT(deleteLater()));
 
-    connect(reply, &QNetworkReply::finished, [reply]() {
-        qDebug() << "[HEALTH]" << reply->readAll();
+    connect(reply, &QNetworkReply::finished, [reply, this]() {
+        QString log = "HEALTH >> " + reply->readAll();
+        emit outInfo(log);
+
         reply->deleteLater();
     });
 }
 
-// ================= model =================
 void VideoHandler::getModel()
 {
     QNetworkRequest req = makeRequest(MODEL_ENDPOINT);
@@ -69,11 +77,15 @@ void VideoHandler::getModel()
     connect(reply, &QNetworkReply::finished, [reply, this]() {
 
         QByteArray data = reply->readAll();
-        qDebug() << "[MODEL]" << data;
+
+        QString log = "MODEL >> " + data;
+        emit outInfo(log);
 
         if (reply->error() != QNetworkReply::NoError)
         {
-            qWarning() << "[MODEL ERROR]" << reply->errorString();
+            QString log = "MODEL ERROR >> " + reply->errorString();
+            emit outWarn(log);
+
             reply->deleteLater();
             return;
         }
@@ -87,7 +99,6 @@ void VideoHandler::getModel()
     });
 }
 
-// ================= files =================
 void VideoHandler::getFiles()
 {
     QUrl url(GET_FILES_ENDPOINT);
@@ -101,13 +112,15 @@ void VideoHandler::getFiles()
 
     QNetworkReply* reply = manager->get(req);
 
-    connect(reply, &QNetworkReply::finished, [reply]() {
-        qDebug() << "[FILES]" << reply->readAll();
+    connect(reply, &QNetworkReply::finished, [reply, this]() {
+
+        QString log = "FILES >> " + reply->readAll();
+        emit outInfo(log);
+
         reply->deleteLater();
     });
 }
 
-// ================= upload queue =================
 void VideoHandler::enqueueUpload(const QString& videoPath)
 {
     m_uploadQueue.enqueue(videoPath);
@@ -131,7 +144,6 @@ void VideoHandler::startNextUpload()
     uploadVideo(currentVideoPath);
 }
 
-// ================= upload =================
 void VideoHandler::uploadVideo(const QString& videoPath)
 {
     initialize();
@@ -176,15 +188,15 @@ void VideoHandler::uploadVideo(const QString& videoPath)
     connect(reply,
                 SIGNAL(error(QNetworkReply::NetworkError)),
                 this,
-                SLOT());
+                SLOT(onError(QNetworkReply::NetworkError)));
 
     connect(reply, &QNetworkReply::finished, [reply, this, videoPath]() {
 
         QByteArray res = reply->readAll();
 
-        qDebug() << "[UPLOAD RESPONSE]" << res;
-        qDebug() << "[HTTP STATUS]"
-                 << reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        emit outInfo("UPLOAD RESPONSE : " + res);
+        emit outInfo(QString("HTTP STATUS %1")
+                     .arg(reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt()));
 
 
         if (reply->error() != QNetworkReply::NoError)
@@ -197,7 +209,7 @@ void VideoHandler::uploadVideo(const QString& videoPath)
 
         videoId = QJsonDocument::fromJson(res).object()["id"].toString();
 
-        qDebug() << "[UPLOAD SUCCESS] videoId =" << videoId;
+        emit outInfo(QString("Success to upload (videoId = %1)").arg(videoId));
 
         summarize(videoPath);
 
@@ -205,7 +217,6 @@ void VideoHandler::uploadVideo(const QString& videoPath)
     });
 }
 
-// ================= summarize =================
 void VideoHandler::summarize(const QString& videoPath)
 {
     auto timer = std::make_shared<QElapsedTimer>();
@@ -213,9 +224,9 @@ void VideoHandler::summarize(const QString& videoPath)
 
 
     QJsonObject prompts;
-    prompts["vlm_prompt"] = "Write a concise and clear dense caption for the provided warehouse video, focusing on irregular or hazardous events such as boxes falling, workers not wearing PPE, workers falling, workers taking photographs, workers chitchatting, forklift stuck, etc. Start and end each sentence with a time stamp.";
-    prompts["summarization"] = "You should summarize the following events of a warehouse in the format start_time:end_time:caption. For start_time and end_time use . to seperate seconds, minutes, hours. If during a time segment only regular activities happen, then ignore them, else note any irregular activities in detail. The output should be bullet points in the format start_time:end_time: detailed_event_description. Don't return anything else except the bullet points.";
-    prompts["aggregation"] = "You are a warehouse monitoring system. Given the caption in the form start_time:end_time: caption, Aggregate the following captions in the format start_time:end_time:event_description. If the event_description is the same as another event_description, aggregate the captions in the format start_time1:end_time1,...,start_timek:end_timek:event_description. If any two adjacent end_time1 and start_time2 is within a few tenths of a second, merge the captions in the format start_time1:end_time2. The output should only contain bullet points.  Cluster the output into Unsafe Behavior, Operational Inefficiencies, Potential Equipment Damage and Unauthorized Personnel";
+    prompts["vlm_prompt"] = vlmPrompt;
+    prompts["summarization"] = captionSummari;
+    prompts["aggregation"] = aggre;
 
     QJsonObject payload;
     payload["id"] = videoId;
@@ -235,15 +246,17 @@ void VideoHandler::summarize(const QString& videoPath)
 
     QNetworkReply* reply = manager->post(req, data);
 
-    qDebug() << "wating for summarize";
+    emit outInfo("Wating for summarize");
 
     connect(reply,
             static_cast<void(QNetworkReply::*)(QNetworkReply::NetworkError)>(&QNetworkReply::error),
             this,
-            [reply](QNetworkReply::NetworkError code) {
-                qWarning() << "Network error occurred:"
-                           << code
-                           << reply->errorString();
+            [reply, this](QNetworkReply::NetworkError code) {
+
+                emit outWarn(QString("Network error occurred: %1 %2")
+                                 .arg(code)
+                                 .arg(reply->errorString()));
+
             });
 
     connect(reply, &QNetworkReply::finished, [reply, timer, videoPath, this](){
@@ -256,11 +269,12 @@ void VideoHandler::summarize(const QString& videoPath)
         if(reply->error() != QNetworkReply::NoError)
         {
             int httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-            qWarning() << "Upload error:"
-                       << "networkError = " << reply->error()
-                       << "errorString = " << reply->errorString()
-                       << "httpStatus = " << httpStatus
-                       << "reason = " << reason;
+
+            emit outError(QString("Upload error: networkError = %1 errorString = %2 httpStatus = %3 reason = %4")
+                          .arg(reply->error())
+                          .arg(reply->errorString())
+                          .arg(httpStatus)
+                          .arg(reason.toString()));
 
             QString err = QString("Summarize error: networkError=%1 errorString=%2 httpStatus=%3 reason=%4")
                                           .arg(reply->error())
@@ -268,7 +282,9 @@ void VideoHandler::summarize(const QString& videoPath)
                                           .arg(httpStatus)
                                           .arg(reason.toString());
 
-            qWarning() << err;
+            emit outError(err);
+
+
             emit uploadFailed(currentVideoPath, err);
 
             reply->deleteLater();
@@ -277,16 +293,13 @@ void VideoHandler::summarize(const QString& videoPath)
         }
 
         quint64 inferTime = timer->elapsed();
-        qDebug() << "Inference Time : " << int(inferTime);
-
-        qDebug() << "Completed SUMMARIZE";
+        emit outInfo(QString("Completed SUMMARIZE inference time (%1)msec").arg(inferTime));
         reply->deleteLater();
 
         qna(videoPath);
         });
 }
 
-// ================= qna =================
 void VideoHandler::qna(const QString& videoPath)
 {
     QJsonArray messages;
@@ -309,7 +322,6 @@ void VideoHandler::qna(const QString& videoPath)
     connect(reply, &QNetworkReply::finished, [reply, this, videoPath]() {
 
         QByteArray res = reply->readAll();
-        qDebug() << "[QNA]" << res;
 
         if (reply->error() != QNetworkReply::NoError)
         {
@@ -322,10 +334,30 @@ void VideoHandler::qna(const QString& videoPath)
         QJsonArray choices = QJsonDocument::fromJson(res).object()["choices"].toArray();
         QString answer = choices[0].toObject()["message"].toObject()["content"].toString();
 
+        emit outInfo(QString("Get answer from VSS : %1").arg(answer));
+
         emit requestToSend(videoPath, answer);
         emit uploadFinished(videoPath, videoId);
 
         reply->deleteLater();
         startNextUpload();
     });
+}
+
+void VideoHandler::onError(QNetworkReply::NetworkError error)
+{
+
+}
+
+void VideoHandler::onWrite(const QString& content, LogLevel level)
+{
+    QString timestamp = QDateTime::currentDateTime().toString("yyyyMMdd_hhmmss.zzz");
+
+    if(level == LogLevel::INFO)
+        qDebug() << timestamp << "[INFO] " << content;
+    else if(level == LogLevel::WARN)
+        qWarning() << timestamp << "[WARN] " << content;
+    else if(level == LogLevel::ERROR)
+        qCritical() << timestamp << "[ERROR] " << content;
+
 }
