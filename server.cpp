@@ -27,7 +27,7 @@ VideoServer::VideoServer(QString name, quint16 port, QObject *parent)
     // upload fail event
     connect(handler, &VideoHandler::uploadFailed,
             this, [this](const QString &videoPath, const QString &reason) {
-
+                emit handler->requestToSend(videoPath, "");
                 emit handler->outWarn(QString("Fail to upload video path = %1 reason = %2")
                                       .arg(videoPath).arg(reason));
             });
