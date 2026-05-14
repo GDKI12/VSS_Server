@@ -34,6 +34,7 @@ SOURCES += \
 
 HEADERS += \
     Log/vssLog.h \
+    define.h \
     videoHandler.h \
     server.h
 

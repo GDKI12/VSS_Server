@@ -22,14 +22,10 @@ public:
     void setLogFileName(const QString&);
 
 public slots:
-    void write(const QJsonObject& obj);
     void addLog(const QString& sensorName, const QString& answer);
-
 private:
     QFile logFile;
     QString logPath;
-    QSet<QString> sensors;
-    QJsonObject currObj;
 
 };
 

@@ -8,27 +8,10 @@
 #include <QQueue>
 #include <QElapsedTimer>
 #include <QNetworkReply>
+#include <QtGlobal>
+#include <algorithm>
 
-// ================= URL =================
-const QString VSS_URL = "http://localhost:8100";
-
-const QString HEALTH_ENDPOINT      = VSS_URL + "/health/ready";
-const QString MODEL_ENDPOINT       = VSS_URL + "/models";
-const QString UPLOAD_FILE_ENDPOINT = VSS_URL + "/files";
-const QString GET_FILES_ENDPOINT   = VSS_URL + "/files";
-const QString SUMMARIZE_ENDPOINT   = VSS_URL + "/summarize";
-const QString QNA_ENDPOINT         = VSS_URL + "/chat/completions";
-
-const QString MODEL_ID = "Cosmos-Reason2-2B";
-
-const QString CONFIG_FILE = "/home/cscho/VSS_Server/config/config.toml";
-
-
-enum class LogLevel{
-    INFO, WARN, ERROR
-};
-
-Q_DECLARE_METATYPE(LogLevel)
+#include "define.h"
 
 class VideoHandler : public QObject
 {
@@ -36,6 +19,7 @@ class VideoHandler : public QObject
 
 public:
     explicit VideoHandler(QObject* parent = nullptr);
+    ~VideoHandler();
     QString getLogPath();
     void requestHealth();
     void getModel();
@@ -83,5 +67,9 @@ private:
     QString captionSummari;
     QString aggre;
     QString query;
+    int chunkSize;
+    QVector<qint64> summTimes;
+
+    int ctn;
 };
 

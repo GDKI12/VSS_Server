@@ -12,7 +12,7 @@
 #include <toml.hpp>
 
 VideoHandler::VideoHandler(QObject* parent)
-    : QObject(parent), manager(nullptr), m_uploading(false)
+    : QObject(parent), manager(nullptr), m_uploading(false), ctn(0)
 {
     connect(this, &VideoHandler::outInfo, this, &VideoHandler::onWrite);
     connect(this, &VideoHandler::outWarn, this, &VideoHandler::onWrite);
@@ -25,8 +25,14 @@ VideoHandler::VideoHandler(QObject* parent)
     aggre          = QString::fromStdString(toml::find<std::string>(data, "Aggregation", "content"));
     query          = QString::fromStdString(toml::find<std::string>(data, "setting", "query"));
     logPath        = QString::fromStdString(toml::find<std::string>(data, "setting", "log_path"));
-
+    modelId        = QString::fromStdString(toml::find<std::string>(data, "setting", "model_id"));
+    chunkSize      = toml::find<int>(data, "setting", "chunk_size");
     QDir().mkpath(logPath);
+}
+
+VideoHandler::~VideoHandler()
+{
+    manager->deleteLater();
 }
 
 QString VideoHandler::getLogPath()
@@ -220,7 +226,7 @@ void VideoHandler::uploadVideo(const QString& videoPath)
 void VideoHandler::summarize(const QString& videoPath)
 {
     auto timer = std::make_shared<QElapsedTimer>();
-        timer->start();
+    timer->start();
 
 
     QJsonObject prompts;
@@ -233,8 +239,8 @@ void VideoHandler::summarize(const QString& videoPath)
     payload["prompt"] = prompts["vlm_prompt"].toString();
     payload["caption_summarization_prompt"] = prompts["summarization"].toString();
     payload["summary_aggregation_prompt"] = prompts["aggregation"].toString();
-    payload["model"] = MODEL_ID;
-    payload["chunk_duration"] = 10;
+    payload["model"] = modelId;
+    payload["chunk_duration"] = chunkSize;
     payload["chunk_overlap_duration"] = 0;
     payload["summarize"] = true;
     payload["enable_chat"] = true;
@@ -296,6 +302,32 @@ void VideoHandler::summarize(const QString& videoPath)
         emit outInfo(QString("Completed SUMMARIZE inference time (%1)msec").arg(inferTime));
         reply->deleteLater();
 
+        summTimes.push_back(inferTime);
+        ctn++;
+
+        if(ctn == 10)
+        {
+            if(!summTimes.isEmpty())
+            {
+                auto result = std::minmax_element(summTimes.cbegin(), summTimes.cend());
+
+                qint64 minValue = *result.first;
+                qint64 maxValue = *result.second;
+
+                qint64 sum = 0;
+
+                for(auto itr = summTimes.cbegin(); itr != summTimes.cend(); itr++)
+                    sum += *itr;
+
+                qint64 avg = sum / summTimes.size();
+
+                emit outInfo(QString("Summarizes ( Max:%1, Min:%2, Avg:%3 )").arg(maxValue).arg(minValue).arg(avg));
+
+                ctn = 0;
+                summTimes.clear();
+            }
+        }
+
         qna(videoPath);
         });
 }
@@ -311,7 +343,7 @@ void VideoHandler::qna(const QString& videoPath)
     QJsonObject payload;
     payload["id"] = videoId;
     payload["messages"] = messages;
-    payload["model"] = MODEL_ID;
+    payload["model"] = modelId;
 
     QByteArray data = QJsonDocument(payload).toJson();
 
@@ -354,7 +386,7 @@ void VideoHandler::onWrite(const QString& content, LogLevel level)
     QString timestamp = QDateTime::currentDateTime().toString("yyyyMMdd_hhmmss.zzz");
 
     if(level == LogLevel::INFO)
-        qDebug().noquote() << "\033[32m" << timestamp << "[INFO] " << content;
+        qDebug().noquote() << timestamp << "[INFO] " << content;
     else if(level == LogLevel::WARN)
         qWarning().noquote() << "\033[33m" << timestamp << "[WARN] " << content;
     else if(level == LogLevel::ERROR)

@@ -1,7 +1,7 @@
 #include "server.h"
 
 VideoServer::VideoServer(QString name, quint16 port, QObject *parent)
-    : QObject(parent), m_port(port), name(name)
+    : QObject(parent), m_port(port), name(name), ctn(0)
 {
 
     uploadThread = new QThread(this);
@@ -90,6 +90,7 @@ void VideoServer::sendToClient(const QString& videoPath, const QString& answer)
 }
 VideoServer::~VideoServer()
 {
+    emit handler->outInfo("Terminating");
     for (auto it = m_clients.begin(); it != m_clients.end(); ++it) {
         QTcpSocket *socket = it.key();
         ClientContext *ctx = it.value();
@@ -97,7 +98,7 @@ VideoServer::~VideoServer()
         if (ctx->ffmpeg) {
             if (ctx->ffmpeg->state() == QProcess::Running) {
                 ctx->ffmpeg->closeWriteChannel();
-                ctx->ffmpeg->waitForFinished(5000);
+                ctx->ffmpeg->waitForFinished(60000);
             }
             delete ctx->ffmpeg;
         }
@@ -245,7 +246,7 @@ void VideoServer::onReadyRead()
         }
 
         if (n == 0) {
-            if (!ctx->ffmpeg->waitForBytesWritten(3000)) {
+            if (!ctx->ffmpeg->waitForBytesWritten(60000)) {
                 emit handler->outWarn(QString("ffmpeg stdin flush timeout: %1")
                                       .arg(ctx->ffmpeg->errorString()));
                 return;
@@ -280,14 +281,40 @@ void VideoServer::onDisconnected()
                          ? ctx->startTime.msecsTo(ctx->endTime)
                          : 0;
 
+        encodeTimes.push_back(elapsedMs);
+        ctn++;
+
+        if(ctn == 10)
+        {
+            if(!encodeTimes.isEmpty())
+            {
+                auto result = std::minmax_element(encodeTimes.cbegin(), encodeTimes.cend());
+
+                qint64 minValue = *result.first;
+                qint64 maxValue = *result.second;
+
+                qint64 sum = 0;
+
+                for(auto itr = encodeTimes.cbegin(); itr != encodeTimes.cend(); itr++)
+                    sum += *itr;
+
+                qint64 avg =  sum / encodeTimes.size();
+
+                emit handler->outInfo(QString("Encoding ( Max : %1, Min : %2, Avg : %3").arg(maxValue).arg(minValue).arg(avg));
+            }
+
+            ctn = 0;
+            encodeTimes.clear();
+        }
+
         if (ctx->ffmpeg) {
             if (ctx->ffmpeg->state() == QProcess::Running) {
                 ctx->ffmpeg->closeWriteChannel();
 
-                if (!ctx->ffmpeg->waitForFinished(10000)) {
+                if (!ctx->ffmpeg->waitForFinished(60000)) {
                     emit handler->outWarn(QString("ffmpeg did not finish cleanly for %1").arg(ctx->savePath));
                     ctx->ffmpeg->kill();
-                    ctx->ffmpeg->waitForFinished(3000);
+                    ctx->ffmpeg->waitForFinished(60000);
                 }
             }
 
