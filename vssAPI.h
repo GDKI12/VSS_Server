@@ -1,25 +1,15 @@
 #pragma once
-#include <QNetworkAccessManager>
-#include <QDir>
-#include <QDebug>
-#include <QObject>
-#include <QMutex>
-#include <QMutexLocker>
-#include <QQueue>
-#include <QElapsedTimer>
-#include <QNetworkReply>
-#include <QtGlobal>
-#include <algorithm>
+
 
 #include "define.h"
 
-class VideoHandler : public QObject
+class VssAPI : public QObject
 {
     Q_OBJECT
 
 public:
-    explicit VideoHandler(QObject* parent = nullptr);
-    ~VideoHandler();
+    explicit VssAPI(QObject* parent = nullptr);
+    ~VssAPI();
     QString getLogPath();
     void requestHealth();
     void getModel();
@@ -31,13 +21,7 @@ public slots:
     void initialize();
     void onError(QNetworkReply::NetworkError error);
 
-    void onWrite(const QString& content, LogLevel logLevel);
-
 signals:
-    void outInfo(const QString& info, LogLevel logLevel = LogLevel::INFO);
-    void outWarn(const QString& warn, LogLevel logLevel = LogLevel::WARN);
-    void outError(const QString& error, LogLevel logLevel = LogLevel::ERROR);
-
     void uploadFinished(const QString& videoPath, const QString& videoId);
     void uploadFailed(const QString& videoPath, const QString& reason);
     void requestToSend(const QString& videoPath, const QString& answer);

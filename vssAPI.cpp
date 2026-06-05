@@ -1,4 +1,4 @@
-#include "videoHandler.h"
+#include "vssAPI.h"
 
 #include <QUrl>
 #include <QJsonDocument>
@@ -11,13 +11,9 @@
 #include <opencv2/opencv.hpp>
 #include <toml.hpp>
 
-VideoHandler::VideoHandler(QObject* parent)
+VssAPI::VssAPI(QObject* parent)
     : QObject(parent), manager(nullptr), m_uploading(false), ctn(0)
 {
-    connect(this, &VideoHandler::outInfo, this, &VideoHandler::onWrite);
-    connect(this, &VideoHandler::outWarn, this, &VideoHandler::onWrite);
-    connect(this, &VideoHandler::outError, this, &VideoHandler::onWrite);
-
     auto data = toml::parse(CONFIG_FILE.toStdString());
 
     vlmPrompt      = QString::fromStdString(toml::find<std::string>(data, "Vlm", "content"));
@@ -25,40 +21,41 @@ VideoHandler::VideoHandler(QObject* parent)
     aggre          = QString::fromStdString(toml::find<std::string>(data, "Aggregation", "content"));
     query          = QString::fromStdString(toml::find<std::string>(data, "setting", "query"));
     logPath        = QString::fromStdString(toml::find<std::string>(data, "setting", "log_path"));
-    modelId        = QString::fromStdString(toml::find<std::string>(data, "setting", "model_id"));
     chunkSize      = toml::find<int>(data, "setting", "chunk_size");
     QDir().mkpath(logPath);
 }
 
-VideoHandler::~VideoHandler()
+VssAPI::~VssAPI()
 {
     manager->deleteLater();
 }
 
-QString VideoHandler::getLogPath()
+QString VssAPI::getLogPath()
 {
     return logPath;
 }
 
-void VideoHandler::initialize()
+void VssAPI::initialize()
 {
     if (!manager)
         manager = new QNetworkAccessManager(this);
+
+    getModel();
 }
 
-QNetworkRequest VideoHandler::makeRequest(const QString& urlStr)
+QNetworkRequest VssAPI::makeRequest(const QString& urlStr)
 {
     QNetworkRequest req;
     req.setUrl(QUrl(urlStr));
 
     req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
 
-    emit outInfo(QString("REQUEST >> %1").arg((req.url()).toString()));
+    Writter::info(QString("REQUEST >> %1").arg((req.url()).toString()));
 
     return req;
 }
 
-void VideoHandler::requestHealth()
+void VssAPI::requestHealth()
 {
     QNetworkRequest req = makeRequest(HEALTH_ENDPOINT);
 
@@ -66,15 +63,15 @@ void VideoHandler::requestHealth()
 
     connect(reply, SIGNAL(finished()), this, SLOT(deleteLater()));
 
-    connect(reply, &QNetworkReply::finished, [reply, this]() {
+    connect(reply, &QNetworkReply::finished, [reply]() {
         QString log = "HEALTH >> " + reply->readAll();
-        emit outInfo(log);
+        Writter::info(log);
 
         reply->deleteLater();
     });
 }
 
-void VideoHandler::getModel()
+void VssAPI::getModel()
 {
     QNetworkRequest req = makeRequest(MODEL_ENDPOINT);
 
@@ -85,12 +82,12 @@ void VideoHandler::getModel()
         QByteArray data = reply->readAll();
 
         QString log = "MODEL >> " + data;
-        emit outInfo(log);
+        Writter::info(log);
 
         if (reply->error() != QNetworkReply::NoError)
         {
             QString log = "MODEL ERROR >> " + reply->errorString();
-            emit outWarn(log);
+            Writter::warn(log);
 
             reply->deleteLater();
             return;
@@ -105,7 +102,7 @@ void VideoHandler::getModel()
     });
 }
 
-void VideoHandler::getFiles()
+void VssAPI::getFiles()
 {
     QUrl url(GET_FILES_ENDPOINT);
 
@@ -118,16 +115,16 @@ void VideoHandler::getFiles()
 
     QNetworkReply* reply = manager->get(req);
 
-    connect(reply, &QNetworkReply::finished, [reply, this]() {
+    connect(reply, &QNetworkReply::finished, [reply]() {
 
         QString log = "FILES >> " + reply->readAll();
-        emit outInfo(log);
+        Writter::info(log);
 
         reply->deleteLater();
     });
 }
 
-void VideoHandler::enqueueUpload(const QString& videoPath)
+void VssAPI::enqueueUpload(const QString& videoPath)
 {
     m_uploadQueue.enqueue(videoPath);
 
@@ -138,7 +135,7 @@ void VideoHandler::enqueueUpload(const QString& videoPath)
     startNextUpload();
 }
 
-void VideoHandler::startNextUpload()
+void VssAPI::startNextUpload()
 {
     if (m_uploadQueue.isEmpty())
     {
@@ -147,10 +144,11 @@ void VideoHandler::startNextUpload()
     }
 
     currentVideoPath = m_uploadQueue.dequeue();
+    qDebug().noquote() << "Processing vss for " << currentVideoPath;
     uploadVideo(currentVideoPath);
 }
 
-void VideoHandler::uploadVideo(const QString& videoPath)
+void VssAPI::uploadVideo(const QString& videoPath)
 {
     initialize();
 
@@ -191,17 +189,18 @@ void VideoHandler::uploadVideo(const QString& videoPath)
     QNetworkReply* reply = manager->post(req, multiPart);
     multiPart->setParent(reply);
 
+
     connect(reply,
-                SIGNAL(error(QNetworkReply::NetworkError)),
-                this,
-                SLOT(onError(QNetworkReply::NetworkError)));
+            QOverload<QNetworkReply::NetworkError>::of(&QNetworkReply::error),
+            this,
+            &VssAPI::onError);
 
     connect(reply, &QNetworkReply::finished, [reply, this, videoPath]() {
 
         QByteArray res = reply->readAll();
 
-        emit outInfo("UPLOAD RESPONSE : " + res);
-        emit outInfo(QString("HTTP STATUS %1")
+        Writter::info("UPLOAD RESPONSE : " + res);
+        Writter::info(QString("HTTP STATUS %1")
                      .arg(reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt()));
 
 
@@ -215,7 +214,7 @@ void VideoHandler::uploadVideo(const QString& videoPath)
 
         videoId = QJsonDocument::fromJson(res).object()["id"].toString();
 
-        emit outInfo(QString("Success to upload (videoId = %1)").arg(videoId));
+        Writter::info(QString("Success to upload (videoId = %1)").arg(videoId));
 
         summarize(videoPath);
 
@@ -223,7 +222,7 @@ void VideoHandler::uploadVideo(const QString& videoPath)
     });
 }
 
-void VideoHandler::summarize(const QString& videoPath)
+void VssAPI::summarize(const QString& videoPath)
 {
     auto timer = std::make_shared<QElapsedTimer>();
     timer->start();
@@ -252,14 +251,14 @@ void VideoHandler::summarize(const QString& videoPath)
 
     QNetworkReply* reply = manager->post(req, data);
 
-    emit outInfo("Wating for summarize");
+    Writter::info("Wating for summarize");
 
     connect(reply,
             static_cast<void(QNetworkReply::*)(QNetworkReply::NetworkError)>(&QNetworkReply::error),
             this,
-            [reply, this](QNetworkReply::NetworkError code) {
+            [reply](QNetworkReply::NetworkError code) {
 
-                emit outWarn(QString("Network error occurred: %1 %2")
+                Writter::warn(QString("Network error occurred: %1 %2")
                                  .arg(code)
                                  .arg(reply->errorString()));
 
@@ -271,12 +270,20 @@ void VideoHandler::summarize(const QString& videoPath)
         QVariant reason = reply->attribute(QNetworkRequest::HttpReasonPhraseAttribute);
 
         QByteArray responseData = reply->readAll();
+        QJsonObject rootObj = QJsonDocument::fromJson(responseData).object();
+        QJsonArray choices = rootObj["choices"].toArray();
+        QJsonObject choice = choices[0].toObject();
+        QJsonObject message = choice["message"].toObject();
+        QString content = message["content"].toString();
+
+        qDebug() << "content: ";
+        qDebug() << content;
 
         if(reply->error() != QNetworkReply::NoError)
         {
             int httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
 
-            emit outError(QString("Upload error: networkError = %1 errorString = %2 httpStatus = %3 reason = %4")
+            Writter::error(QString("Upload error: networkError = %1 errorString = %2 httpStatus = %3 reason = %4")
                           .arg(reply->error())
                           .arg(reply->errorString())
                           .arg(httpStatus)
@@ -288,7 +295,7 @@ void VideoHandler::summarize(const QString& videoPath)
                                           .arg(httpStatus)
                                           .arg(reason.toString());
 
-            emit outError(err);
+            Writter::error(err);
 
 
             emit uploadFailed(currentVideoPath, err);
@@ -299,7 +306,8 @@ void VideoHandler::summarize(const QString& videoPath)
         }
 
         quint64 inferTime = timer->elapsed();
-        emit outInfo(QString("Completed SUMMARIZE inference time (%1)msec").arg(inferTime));
+
+        Writter::info(QString("Completed SUMMARIZE inference time (%1)msec").arg(inferTime));
         reply->deleteLater();
 
         summTimes.push_back(inferTime);
@@ -321,18 +329,19 @@ void VideoHandler::summarize(const QString& videoPath)
 
                 qint64 avg = sum / summTimes.size();
 
-                emit outInfo(QString("Summarizes ( Max:%1, Min:%2, Avg:%3 )").arg(maxValue).arg(minValue).arg(avg));
+                Writter::info(QString("Summarizes ( Max:%1, Min:%2, Avg:%3 )").arg(maxValue).arg(minValue).arg(avg));
 
                 ctn = 0;
                 summTimes.clear();
             }
         }
 
-        qna(videoPath);
+        emit requestToSend(videoPath, content);
+        startNextUpload();
         });
 }
 
-void VideoHandler::qna(const QString& videoPath)
+void VssAPI::qna(const QString& videoPath)
 {
     QJsonArray messages;
     messages.append(QJsonObject{
@@ -366,9 +375,8 @@ void VideoHandler::qna(const QString& videoPath)
         QJsonArray choices = QJsonDocument::fromJson(res).object()["choices"].toArray();
         QString answer = choices[0].toObject()["message"].toObject()["content"].toString();
 
-        emit outInfo(QString("Get answer from VSS : %1").arg(answer));
+        Writter::info(QString("Get answer from VSS : %1").arg(answer));
 
-        emit requestToSend(videoPath, answer);
         emit uploadFinished(videoPath, videoId);
 
         reply->deleteLater();
@@ -376,20 +384,11 @@ void VideoHandler::qna(const QString& videoPath)
     });
 }
 
-void VideoHandler::onError(QNetworkReply::NetworkError error)
+void VssAPI::onError(QNetworkReply::NetworkError error)
 {
-
+    Q_UNUSED(error);
+    auto* reply = qobject_cast<QNetworkReply*>(sender());
+    if (reply)
+        Writter::error(reply->errorString());
 }
 
-void VideoHandler::onWrite(const QString& content, LogLevel level)
-{
-    QString timestamp = QDateTime::currentDateTime().toString("yyyyMMdd_hhmmss.zzz");
-
-    if(level == LogLevel::INFO)
-        qDebug().noquote() << timestamp << "[INFO] " << content;
-    else if(level == LogLevel::WARN)
-        qWarning().noquote() << "\033[33m" << timestamp << "[WARN] " << content;
-    else if(level == LogLevel::ERROR)
-        qCritical().noquote() << "\033[31m" << timestamp << "[ERROR] " << content;
-
-}

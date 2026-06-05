@@ -1,17 +1,8 @@
 #ifndef EVALPERFOMANCE_H
 #define EVALPERFOMANCE_H
 
-#include <QFile>
-#include <QDir>
-#include <QFileInfo>
-#include <QDebug>
-#include <QObject>
-#include <QJsonDocument>
-#include <QJsonObject>
-#include <QJsonArray>
-#include <QByteArray>
-#include <QDateTime>
 
+#include "define.h"
 
 class VSSLog : public QObject
 {
@@ -22,7 +13,7 @@ public:
     void setLogFileName(const QString&);
 
 public slots:
-    void addLog(const QString& sensorName, const QString& answer);
+    void addLog(const ClipInfo& log);
 private:
     QFile logFile;
     QString logPath;

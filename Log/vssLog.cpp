@@ -47,7 +47,7 @@ void VSSLog::initWriter(const QString& path)
 }
 
 
-void VSSLog::addLog(const QString& sensorName, const QString& answer)
+void VSSLog::addLog(const ClipInfo& log)
 {
 
     if(!logFile.open(QIODevice::ReadOnly))
@@ -74,15 +74,18 @@ void VSSLog::addLog(const QString& sensorName, const QString& answer)
     {
         QJsonObject sceneObj = scenes[i].toObject();
 
-        if(sceneObj["scene"].toString() != sensorName)
+        if(sceneObj["scene"].toString() != log.sensorName)
             continue;
 
         QJsonArray frames = sceneObj["frames"].toArray();
 
         QJsonObject newObj;
         newObj["frame_id"] = frames.size() + 1;
+        newObj["camId"] = log.camName;
         newObj["video_length"] = 10;
-        newObj["answer"] = answer;
+        newObj["videoPath"] = log.videoPath;
+        newObj["weather"] = QJsonArray::fromStringList(log.weather);
+        newObj["event"] = QJsonArray::fromStringList(log.event);
 
         frames.append(newObj);
         sceneObj["frames"] = frames;
@@ -97,14 +100,17 @@ void VSSLog::addLog(const QString& sensorName, const QString& answer)
         QJsonObject newObj;
 
         newObj["frame_id"] = 1;
+        newObj["camId"] = log.camName;
         newObj["video_length"] = 10;
-        newObj["answer"] = answer;
+        newObj["videoPath"] = log.videoPath;
+        newObj["weather"] = QJsonArray::fromStringList(log.weather);
+        newObj["event"] = QJsonArray::fromStringList(log.event);
 
         QJsonArray newFrames;
         newFrames.append(newObj);
 
         QJsonObject newScene;
-        newScene["scene"] = sensorName;
+        newScene["scene"] = log.sensorName;
         newScene["frames"] = newFrames;
 
         scenes.append(newScene);

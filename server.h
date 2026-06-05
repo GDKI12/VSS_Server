@@ -1,20 +1,7 @@
 #ifndef VIDEOSEVER_H
 #define VIDEOSEVER_H
 
-#include <QObject>
-#include <QTcpServer>
-#include <QTcpSocket>
-#include <QHash>
-#include <QProcess>
-#include <QThread>
-#include <QString>
-#include <QJsonDocument>
-#include <QJsonObject>
-#include <QDateTime>
-#include <QDebug>
-#include <QDir>
-#include <QFileInfo>
-#include "videoHandler.h"
+#include "vssAPI.h"
 #include "Log/vssLog.h"
 
 
@@ -27,15 +14,8 @@ public:
     ~VideoServer();
 
 private:
-    struct ClientContext {
-        QProcess *ffmpeg = nullptr;
-        QString savePath;
-        quint64 receivedBytes = 0;
-        QDateTime startTime;
-        QDateTime endTime;
-    };
-
-    void startFfmpegForClient(QTcpSocket *socket, ClientContext *ctx);
+    void stopFfmpeg();
+    bool ensureFfmpegRunning(QTcpSocket *socket, ClientContext *ctx);
 
 private slots:
     void onNewConnection();
@@ -48,13 +28,19 @@ private slots:
     void onMetaRead();
 
 signals:
-    void requestLog(const QString& sensorName, const QString& answer);
+    void requestEnqueue(const QString&);
+    void requestLog(const QString& sensorName, const QString& answer, const QString& videoPath);
 
 private:
+    QMutex ffmpegMutex;
+    QProcess* ffmpeg;
     QTcpServer m_server;
     QHash<QTcpSocket*, ClientContext*> m_clients;
-    VideoHandler* handler = nullptr;
-    QThread* uploadThread = nullptr;
+
+    QQueue<QString> m_uploadQueue;
+    bool m_uploading;
+    QString currentVideoPath;
+
     quint16 m_port = 0;
     QString name;
 
