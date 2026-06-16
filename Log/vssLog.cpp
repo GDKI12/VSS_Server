@@ -84,8 +84,8 @@ void VSSLog::addLog(const ClipInfo& log)
         newObj["camId"] = log.camName;
         newObj["video_length"] = 10;
         newObj["videoPath"] = log.videoPath;
-        newObj["weather"] = QJsonArray::fromStringList(log.weather);
-        newObj["event"] = QJsonArray::fromStringList(log.event);
+        newObj["weather"] = log.weather;
+        newObj["event"] = log.event;
 
         frames.append(newObj);
         sceneObj["frames"] = frames;
@@ -103,8 +103,8 @@ void VSSLog::addLog(const ClipInfo& log)
         newObj["camId"] = log.camName;
         newObj["video_length"] = 10;
         newObj["videoPath"] = log.videoPath;
-        newObj["weather"] = QJsonArray::fromStringList(log.weather);
-        newObj["event"] = QJsonArray::fromStringList(log.event);
+        newObj["weather"] = log.weather;
+        newObj["event"] = log.event;
 
         QJsonArray newFrames;
         newFrames.append(newObj);

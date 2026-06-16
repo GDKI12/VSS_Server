@@ -49,14 +49,20 @@ enum class LogLevel{
 
 Q_DECLARE_METATYPE(LogLevel)
 
+struct VssInfo
+{
+    uint8_t isEvent;
+    uint8_t weather;
+    uint8_t eventType;
+};
 
 struct ClipInfo
 {
     QString camName;
     QString sensorName;
     QString videoPath;
-    QStringList weather;
-    QStringList event;
+    QString weather;
+    QString event;
 };
 
 struct ClientContext {

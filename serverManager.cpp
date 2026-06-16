@@ -88,24 +88,28 @@ void ServerManager::getReplies(const QString& videoPath, const QString& text)
 {
     ClipInfo clip;
 
-    QMap<QString, QStringList> result;
+    QMap<QString, QString> result;
 
     QString currSection;
     QStringList lines = text.split('\n');
 
-    for(QString line : lines)
+
+    for(auto itr = lines.begin(); itr != lines.end(); itr++)
     {
-        line = line.trimmed();
-
-        if(line.startsWith('[') && line.endsWith(']'))
+        if(*itr == "[Weather]")
         {
-            currSection = line.mid(1, line.length() - 2);
-            result[currSection] = QStringList();
+            if(itr+1 == lines.end())
+                result["Weather"] = "";
+            else
+                result["Weather"] = *(itr+1);
 
-        }else if(line.startsWith("- ") && !currSection.isEmpty())
+        }
+        else if(*itr == "[Event]")
         {
-            QString value = line.mid(2).trimmed();
-            result[currSection].append(value);
+            if(itr+1 == lines.end())
+                result["Event"] = "";
+            else
+                result["Event"] = *(itr+1);
         }
     }
 
@@ -127,12 +131,11 @@ void ServerManager::getReplies(const QString& videoPath, const QString& text)
     emit requestToAddLog(clip);
 
     taskPool.push_back(clip);
-
-    if(taskPool.size() == 3)
+    Writter::info(QString("Current pool size is %1").arg(taskPool.size()));
+    if(taskPool.size() == 1)
     {
-        Writter::info("Test");
+        Writter::info("Request to client~");
         sendToClient("test");
-
         taskPool.clear();
 
     }

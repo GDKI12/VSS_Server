@@ -22,6 +22,7 @@ VssAPI::VssAPI(QObject* parent)
     query          = QString::fromStdString(toml::find<std::string>(data, "setting", "query"));
     logPath        = QString::fromStdString(toml::find<std::string>(data, "setting", "log_path"));
     chunkSize      = toml::find<int>(data, "setting", "chunk_size");
+    cvPrompt       = QString::fromStdString(toml::find<std::string>(data, "setting", "cv_prompt"));
     QDir().mkpath(logPath);
 }
 
@@ -126,6 +127,7 @@ void VssAPI::getFiles()
 
 void VssAPI::enqueueUpload(const QString& videoPath)
 {
+    QMutexLocker locker(&mutex);
     m_uploadQueue.enqueue(videoPath);
 
     if (m_uploading)
@@ -240,9 +242,22 @@ void VssAPI::summarize(const QString& videoPath)
     payload["summary_aggregation_prompt"] = prompts["aggregation"].toString();
     payload["model"] = modelId;
     payload["chunk_duration"] = chunkSize;
+    payload["num_frames_per_chunk"] = 4;
+    payload["vlm_input_width"] = 2048;
+    payload["vlm_input_height"] = 1536;
     payload["chunk_overlap_duration"] = 0;
     payload["summarize"] = true;
-    payload["enable_chat"] = true;
+    payload["enable_cv_metadata"]=true;
+    payload["enable_chat"] = false;
+    payload["cv_pipeline_prompt"] = cvPrompt;
+
+    payload["max_tokens"] = 512;
+    payload["temperature"] = 0.4;
+    payload["top_p"] = 1.0;
+    payload["top_k"] = 100.0;
+    payload["summarize_batch_size"] = 6;
+    payload["summarize_max_tokens"] = 2048;
+
 
     QJsonDocument doc = QJsonDocument(payload);
     QByteArray data = doc.toJson(QJsonDocument::Compact);
@@ -271,13 +286,20 @@ void VssAPI::summarize(const QString& videoPath)
 
         QByteArray responseData = reply->readAll();
         QJsonObject rootObj = QJsonDocument::fromJson(responseData).object();
+        qDebug() << "rootObj";
+        qDebug() << rootObj;
         QJsonArray choices = rootObj["choices"].toArray();
         QJsonObject choice = choices[0].toObject();
         QJsonObject message = choice["message"].toObject();
         QString content = message["content"].toString();
 
+        QJsonObject usage = rootObj["usage"].toObject();
+        int processingTime = usage["query_processing_time"].toInt();
+
         qDebug() << "content: ";
         qDebug() << content;
+
+        Writter::info(QString("Summarazing infer time : %1 sec").arg(processingTime));
 
         if(reply->error() != QNetworkReply::NoError)
         {

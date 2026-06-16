@@ -35,6 +35,7 @@ private:
     QNetworkRequest makeRequest(const QString& url);
 
 private:
+    QMutex mutex;
     QNetworkAccessManager* manager;
 
     QQueue<QString> m_uploadQueue;
@@ -49,6 +50,8 @@ private:
 
     QString vlmPrompt;
     QString captionSummari;
+
+    QString cvPrompt;
     QString aggre;
     QString query;
     int chunkSize;
