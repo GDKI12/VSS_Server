@@ -1,17 +1,19 @@
 #include "serverManager.h"
+#include <toml.hpp>
 
-
-ServerManager::ServerManager(QObject* parent) : QObject(parent), testPort(4303)
+ServerManager::ServerManager(QObject* parent) : QObject(parent), vssPort(4303)
 {
     qRegisterMetaType<LogLevel>("LogLevel");
 
-    connect(&testServer, &QTcpServer::newConnection, this, &ServerManager::onNewConnection);
+    auto data = toml::parse(CONFIG_FILE.toStdString());
+    QString savePath = QString::fromStdString(toml::find<std::string>(data,"setting","video_path"));
 
-    if(!testServer.listen(QHostAddress::Any, testPort))
-        Writter::error("Connected to test server is failed");
+    connect(&vssServer, &QTcpServer::newConnection, this, &ServerManager::onNewConnection);
+
+    if(!vssServer.listen(QHostAddress::Any, vssPort))
+        Writter::error("Connected to vss server is failed");
     else
-        Writter::info("Success to connect to Test server");
-
+        Writter::info("Success to connect to vss server");
 
 
     apiManager = new VssAPI();
@@ -21,9 +23,35 @@ ServerManager::ServerManager(QObject* parent) : QObject(parent), testPort(4303)
     server2 = std::make_shared<VideoServer>("cam2", 5001);
     server3 = std::make_shared<VideoServer>("cam3", 5002);
 
-    // TODO
-    // How many server to load
-    camSize = 3;
+#ifdef TEST
+    auto data = toml::parse(CONFIG_FILE.toStdString());
+    QString testFilePath = QString::fromStdString(toml::find<std::string>(data,"setting","test_data"));
+
+    QFile fi(testFilePath);
+    if(!fi.open(QIODevice::ReadOnly))
+        qCritical() << "Fail to open file " << testFilePath;
+
+    QByteArray d = fi.readAll();
+
+    fi.close();
+
+    QJsonDocument doc = QJsonDocument::fromJson(d);
+
+    QJsonArray rootArray = doc.array();
+
+    for(const QJsonValue& value : rootArray)
+    {
+        QJsonObject obj = value.toObject();
+
+        TestData td;
+        td.event = obj.value("event").toString();
+        td.weather = obj.value("weather").toString();
+        testList.enqueue(td);
+    }
+
+    Writter::info(QString("Gathered test data, data size: %1").arg(testList.size()));
+
+#endif
 
     connect(server1.get(), &VideoServer::requestEnqueue, apiManager, &VssAPI::enqueueUpload);
     connect(server2.get(), &VideoServer::requestEnqueue, apiManager, &VssAPI::enqueueUpload);
@@ -34,60 +62,162 @@ ServerManager::ServerManager(QObject* parent) : QObject(parent), testPort(4303)
     connect(server3.get(), &VideoServer::requestLog, this, &ServerManager::getReplies);
 
     connect(apiManager, &VssAPI::requestToSend, this, &ServerManager::getReplies);
+    connect(this, &ServerManager::finishedSendToClient, apiManager, &VssAPI::startNextUpload);
+
+#ifdef TEST
+    connect(apiManager, &VssAPI::onTest, this, &ServerManager::test);
+#endif
     connect(this, &ServerManager::requestToAddLog, logger, &VSSLog::addLog);
 }
 
 ServerManager::~ServerManager()
 {
-    if(testSocket && testSocket->state() == QAbstractSocket::ConnectedState)
-        testSocket->disconnectFromHost();
-    if(testSocket)
-        testSocket->deleteLater();
+    if(vssSocket && vssSocket->state() == QAbstractSocket::ConnectedState)
+        vssSocket->disconnectFromHost();
+    if(vssSocket)
+        vssSocket->deleteLater();
 }
 
+void ServerManager::terminate()
+{
+    if(vssSocket && vssSocket->state() == QAbstractSocket::ConnectedState)
+        vssSocket->disconnectFromHost();
+    if(vssSocket)
+        vssSocket->deleteLater();
+
+    logger->deleteLater();
+    apiManager->deleteLater();
+}
 void ServerManager::onNewConnection()
 {
-    while(testServer.hasPendingConnections())
+    while(vssServer.hasPendingConnections())
     {
-        QTcpSocket* socket = testServer.nextPendingConnection();
-        testSocket = socket;
+        vssSocket = vssServer.nextPendingConnection();
 
-        Writter::info("Test client connected");
-
-        connect(testSocket, &QTcpSocket::disconnected, this, [this, socket](){
-            if(testSocket == socket)
-                testSocket = nullptr;
-
-            socket->deleteLater();
-            Writter::info("Test client disconnected");
-        });
+        connect(vssSocket, &QTcpSocket::readyRead, this, &ServerManager::getInitParams);
+        connect(vssSocket, &QTcpSocket::disconnected, vssSocket, &QTcpSocket::deleteLater);
     }
 }
-
-void ServerManager::sendToClient(const QString& result)
+#ifdef TEST
+void ServerManager::test(const QString& path)
 {
-    Writter::info(result);
+    QFileInfo fi(path);
+    QString fileName = fi.baseName();
+
+    VssInfo vssInfo;
+
+    QRegularExpression re("(Sensor_Data_\\d{8})\\d*_(cam\\d+)");
+    QRegularExpressionMatch match = re.match(fileName);
+    if (match.hasMatch())
+    {
+        clip.sensorName = match.captured(1);
+        clip.camName    = match.captured(2);
+    }
+
+    TestData td = testList.dequeue();
+    QString weather = td.weather.trimmed().toLower();
+    QString event = td.event.trimmed().toLower();
+
+    if(weather.contains("snow"))
+        vssInfo.weather = 0x04;
+    else if(weather.contains("rain"))
+        vssInfo.weather = 0x03;
+    else if(weather.contains("fog"))
+        vssInfo.weather = 0x02;
+    else if(weather.contains("overcast"))
+        vssInfo.weather = 0x01;
+    else
+        vssInfo.weather = 0x00;
+
+    if(event.contains("traffic accident"))
+        vssInfo.eventType = 0x03;
+    else if(event.contains("road construction"))
+        vssInfo.eventType = 0x02;
+    else if(event.contains("jaywalking"))
+        vssInfo.eventType = 0x01;
+    else
+        vssInfo.eventType = 0x00;
+
+    taskPool.push_back(vssInfo);
+
+    if(taskPool.size() == initConfig.camSize)
+    {
+        Writter::info("Request to client~");
+        // TODO
+        VssInfo totalInfo;
+        totalInfo.weather = 0x00;
+        totalInfo.eventType = 0x00;
+
+        for(int i = 0; i < taskPool.size() ; i++)
+        {
+            if(taskPool[i].weather >= totalInfo.weather)
+                totalInfo.weather = taskPool[i].weather;
+
+            if(taskPool[i].eventType >= totalInfo.eventType)
+                totalInfo.eventType = taskPool[i].eventType;
+        }
+
+        if(totalInfo.weather == 0x00 && totalInfo.eventType == 0x00)
+            totalInfo.isEvent = 0x00;
+        else
+            totalInfo.isEvent = 0x01;
+
+        sendToClient(totalInfo);
+        taskPool.clear();
+    }
+    emit finishedSendToClient();
+}
+#endif
+void ServerManager::sendToClient(const VssInfo& result)
+{
+    Writter::info("Strat to send");
+
+
     QJsonObject obj;
 
-    obj["result"] = true;
+    obj["isEvent"] = result.isEvent;
+    obj["weather"] = result.weather;
+    obj["eventType"] = result.eventType;
     QByteArray data = QJsonDocument(obj).toJson(QJsonDocument::Compact);
     data.append("\n");
 
-    if(testSocket && testSocket->state() == QAbstractSocket::ConnectedState)
+    if(vssSocket && vssSocket->state() == QAbstractSocket::ConnectedState)
     {
-        testSocket->write(data);
-        testSocket->flush();
-        Writter::info(QString("Send result to test client : %1").arg(QString::fromUtf8(data)));
+        vssSocket->write(data);
+        vssSocket->flush();
+        Writter::info(QString("Send result to test client : %1").arg(QString::fromUtf8(data).remove('\n')));
     }else
     {
         Writter::info("Test client is not connected");
     }
 }
 
+void ServerManager::getInitParams()
+{
+    QTcpSocket* socket = qobject_cast<QTcpSocket*>(sender());
+    if(!socket)
+    {
+        // STOP Program
+        Writter::error("Fail to create Init Socket");
+        terminate();
+        return;
+    }
+    Writter::info("Start to init params");
+    QByteArray buffer;
+    buffer.append(socket->readAll());
+
+    Writter::info(QString("Init prams: %1").arg(QString::fromUtf8(buffer)));
+
+    memcpy(&initConfig, buffer.constData(), sizeof(InitConfig));
+
+    Writter::info(QString("Get init parmas camSize : %1, videoLength : %2, fps : %3")
+                  .arg(initConfig.camSize).arg(initConfig.videoLength).arg(initConfig.fps));
+}
+
 void ServerManager::getReplies(const QString& videoPath, const QString& text)
 {
     ClipInfo clip;
-
+    VssInfo vssInfo;
     QMap<QString, QString> result;
 
     QString currSection;
@@ -118,25 +248,73 @@ void ServerManager::getReplies(const QString& videoPath, const QString& text)
 
     QRegularExpression re("(Sensor_Data_\\d{8})\\d*_(cam\\d+)");
     QRegularExpressionMatch match = re.match(fileName);
+
     if (match.hasMatch())
     {
         clip.sensorName = match.captured(1);
         clip.camName    = match.captured(2);
     }
 
-    clip.event = result["Event"];
-    clip.weather = result["Weather"];
+    clip.event = result["Event"].trimmed().toLower();
+    clip.weather = result["Weather"].trimmed().toLower();
     clip.videoPath = videoPath;
 
     emit requestToAddLog(clip);
 
-    taskPool.push_back(clip);
-    Writter::info(QString("Current pool size is %1").arg(taskPool.size()));
-    if(taskPool.size() == 1)
+
+    if(clip.weather.contains("snow"))
+        vssInfo.weather = 0x04;
+    else if(clip.weather.contains("rain"))
+        vssInfo.weather = 0x03;
+    else if(clip.weather.contains("fog"))
+        vssInfo.weather = 0x02;
+    else if(clip.weather.contains("overcast"))
+        vssInfo.weather = 0x01;
+    else
+        vssInfo.weather = 0x00;
+
+    if(clip.event.contains("traffic accident"))
+        vssInfo.eventType = 0x03;
+    else if(clip.event.contains("road construction"))
+        vssInfo.eventType = 0x02;
+    else if(clip.event.contains("jaywalking"))
+        vssInfo.eventType = 0x01;
+    else
+        vssInfo.eventType = 0x00;
+
+    if(vssInfo.weather == 0x00 && vssInfo.eventType == 0x00)
+        vssInfo.isEvent = 0x00;
+    else
+        vssInfo.isEvent = 0x01;
+
+    taskPool.push_back(vssInfo);
+
+    Writter::info(QString("Current cam is %1").arg(taskPool.size()));
+    Writter::info(QString("Weather: %1, Event: %2").arg(clip.weather, clip.event));
+
+    if(taskPool.size() == initConfig.camSize)
     {
         Writter::info("Request to client~");
-        sendToClient("test");
-        taskPool.clear();
 
+        VssInfo totalInfo;
+        totalInfo.weather = 0x00;
+        totalInfo.eventType = 0x00;
+
+        for(int i = 0; i < taskPool.size() ; i++)
+        {
+            if(taskPool[i].weather >= totalInfo.weather)
+                totalInfo.weather = taskPool[i].weather;
+
+            if(taskPool[i].eventType >= totalInfo.eventType)
+                totalInfo.eventType = taskPool[i].eventType;
+        }
+
+        if(totalInfo.weather == 0x00 && totalInfo.eventType == 0x00)
+            totalInfo.isEvent = 0x00;
+        else
+            totalInfo.isEvent = 0x01;
+
+        sendToClient(totalInfo);
+        taskPool.clear();
     }
 }

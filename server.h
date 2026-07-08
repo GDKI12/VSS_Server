@@ -50,11 +50,10 @@ private:
 
     QTcpSocket* metaSocket;
 
-    VSSLog* logger;
-
     QVector<qint64> encodeTimes;
 
     int ctn;
+    QString savePath;
 };
 
 

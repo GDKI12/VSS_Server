@@ -28,26 +28,28 @@
 #include <iostream>
 #include <QRegularExpression>
 
-// ================= URL =================
-//const QString VSS_URL = "http://localhost:8100";
-const QString VSS_URL = "http://192.168.0.187:8100";
 
-const QString HEALTH_ENDPOINT      = VSS_URL + "/health/ready";
-const QString MODEL_ENDPOINT       = VSS_URL + "/models";
-const QString UPLOAD_FILE_ENDPOINT = VSS_URL + "/files";
-const QString GET_FILES_ENDPOINT   = VSS_URL + "/files";
-const QString SUMMARIZE_ENDPOINT   = VSS_URL + "/summarize";
-const QString QNA_ENDPOINT         = VSS_URL + "/chat/completions";
-
-const QString CONFIG_FILE = "/home/cscho/VSS_Server/config/config.toml";
+const QString CONFIG_FILE = "../config/config.toml";
 
 //const QString MODEL_ID = "Cosmos-Reason2-2B";
 
+#ifdef TEST
+struct TestData{
+    QString weather;
+    QString event;
+};
+#endif
 enum class LogLevel{
     INFO, WARN, ERROR
 };
 
 Q_DECLARE_METATYPE(LogLevel)
+struct InitConfig
+{
+    int camSize;
+    int videoLength;
+    int fps;
+};
 
 struct VssInfo
 {

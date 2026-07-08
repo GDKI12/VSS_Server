@@ -11,17 +11,21 @@ class ServerManager : public QObject
 public:
     explicit ServerManager(QObject* parent = nullptr);
     ~ServerManager();
-    void sendToClient(const QString&);
-
+    void sendToClient(const VssInfo&);
+    void terminate();
 public slots:
     void onNewConnection();
     void getReplies(const QString&, const QString&);
-
+    void getInitParams();
+#ifdef TEST
+    void test(const QString&);
+#endif
 signals:
     void requestToAddLog(const ClipInfo&);
+    void finishedSendToClient();
 
 private:
-    int camSize;
+    InitConfig initConfig;
     std::shared_ptr<VideoServer> server1;
     std::shared_ptr<VideoServer> server2;
     std::shared_ptr<VideoServer> server3;
@@ -29,12 +33,15 @@ private:
     VSSLog* logger = nullptr;
     VssAPI* apiManager = nullptr;
 
-    QTcpServer testServer;
+    QTcpServer vssServer;
 
-    QTcpSocket* testSocket = nullptr;
-    int testPort;
+    QTcpSocket* vssSocket = nullptr;
+    int vssPort;
 
-    QVector<ClipInfo> taskPool;
+    QVector<VssInfo> taskPool;
+#ifdef TEST
+    QQueue<TestData> testList;
+#endif
 };
 
 #endif // EVENTHANDLER_H

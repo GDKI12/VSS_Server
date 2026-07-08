@@ -9,21 +9,45 @@
 #include <QThread>
 #include <QProcess>
 #include <opencv2/opencv.hpp>
+#include <QTimer>
 #include <toml.hpp>
 
 VssAPI::VssAPI(QObject* parent)
     : QObject(parent), manager(nullptr), m_uploading(false), ctn(0)
 {
-    auto data = toml::parse(CONFIG_FILE.toStdString());
+    auto data      = toml::parse(CONFIG_FILE.toStdString());
+    vssURL         = QString::fromStdString(toml::find<std::string>(data, "setting", "vss_url"));
+
+    maxTokens              = toml::find<int>(data, "summarize", "max_tokens");
+    temperature            = toml::find<float>(data, "summarize", "temperature");
+    topP                   = toml::find<float>(data, "summarize", "top_p");
+    topK                   = toml::find<float>(data, "summarize", "top_k");
+    summarBatchSize        = toml::find<int>(data, "summarize", "summarize_batch_size");
+    summarMaxTokens        = toml::find<int>(data, "summarize", "summarize_max_tokens");
+    chunkSize              = toml::find<int>(data, "summarize", "chunk_duration");
+    numFramesPerChunk      = toml::find<int>(data, "summarize", "num_frames_per_chunk");
+    chunkOverlapDuration   = toml::find<int>(data, "summarize", "chunk_overlap_duration");
+    vlmInputWidth          = toml::find<int>(data, "summarize", "vlm_input_width");
+    vlmInputHeight         = toml::find<int>(data, "summarize", "vlm_input_height");
+
+    enableChat     = toml::find<bool>(data, "summarize", "enable_chat");
+    enableCVmeta   = toml::find<bool>(data, "summarize", "enable_cv_meta");
 
     vlmPrompt      = QString::fromStdString(toml::find<std::string>(data, "Vlm", "content"));
     captionSummari = QString::fromStdString(toml::find<std::string>(data, "Caption", "content"));
     aggre          = QString::fromStdString(toml::find<std::string>(data, "Aggregation", "content"));
     query          = QString::fromStdString(toml::find<std::string>(data, "setting", "query"));
     logPath        = QString::fromStdString(toml::find<std::string>(data, "setting", "log_path"));
-    chunkSize      = toml::find<int>(data, "setting", "chunk_size");
-    cvPrompt       = QString::fromStdString(toml::find<std::string>(data, "setting", "cv_prompt"));
+    cvPrompt       = QString::fromStdString(toml::find<std::string>(data, "summarize", "cv_prompt"));
+
+
     QDir().mkpath(logPath);
+
+    healthyEndpoint = vssURL + "/health/ready";
+    modelEndpoint = vssURL + "/models";
+    filesEndpoint = vssURL + "/files";
+    summarizeEndpoint = vssURL + "/summarize";
+    qnaEndpoint = vssURL + "/chat/completions";
 }
 
 VssAPI::~VssAPI()
@@ -40,8 +64,9 @@ void VssAPI::initialize()
 {
     if (!manager)
         manager = new QNetworkAccessManager(this);
-
+#ifndef TEST
     getModel();
+#endif
 }
 
 QNetworkRequest VssAPI::makeRequest(const QString& urlStr)
@@ -58,7 +83,7 @@ QNetworkRequest VssAPI::makeRequest(const QString& urlStr)
 
 void VssAPI::requestHealth()
 {
-    QNetworkRequest req = makeRequest(HEALTH_ENDPOINT);
+    QNetworkRequest req = makeRequest(healthyEndpoint);
 
     QNetworkReply* reply = manager->get(req);
 
@@ -74,7 +99,7 @@ void VssAPI::requestHealth()
 
 void VssAPI::getModel()
 {
-    QNetworkRequest req = makeRequest(MODEL_ENDPOINT);
+    QNetworkRequest req = makeRequest(modelEndpoint);
 
     QNetworkReply* reply = manager->get(req);
 
@@ -105,7 +130,7 @@ void VssAPI::getModel()
 
 void VssAPI::getFiles()
 {
-    QUrl url(GET_FILES_ENDPOINT);
+    QUrl url(filesEndpoint);
 
     QUrlQuery query;
     query.addQueryItem("purpose", "vision");
@@ -146,8 +171,19 @@ void VssAPI::startNextUpload()
     }
 
     currentVideoPath = m_uploadQueue.dequeue();
-    qDebug().noquote() << "Processing vss for " << currentVideoPath;
+    Writter::info(QString("Processing vss for %1").arg(currentVideoPath));
+#ifdef TEST
+    requestTest(currentVideoPath);
+
+#else
     uploadVideo(currentVideoPath);
+#endif
+}
+
+void VssAPI::requestTest(const QString& videoPath)
+{
+    initialize();
+    emit onTest(videoPath);
 }
 
 void VssAPI::uploadVideo(const QString& videoPath)
@@ -156,7 +192,7 @@ void VssAPI::uploadVideo(const QString& videoPath)
 
     QFile* video = new QFile(videoPath);
 
-    QNetworkRequest req(UPLOAD_FILE_ENDPOINT);
+    QNetworkRequest req(filesEndpoint);
     QHttpMultiPart* multiPart = new QHttpMultiPart(QHttpMultiPart::FormDataType);
 
     if (!video->open(QIODevice::ReadOnly))
@@ -226,10 +262,6 @@ void VssAPI::uploadVideo(const QString& videoPath)
 
 void VssAPI::summarize(const QString& videoPath)
 {
-    auto timer = std::make_shared<QElapsedTimer>();
-    timer->start();
-
-
     QJsonObject prompts;
     prompts["vlm_prompt"] = vlmPrompt;
     prompts["summarization"] = captionSummari;
@@ -242,27 +274,27 @@ void VssAPI::summarize(const QString& videoPath)
     payload["summary_aggregation_prompt"] = prompts["aggregation"].toString();
     payload["model"] = modelId;
     payload["chunk_duration"] = chunkSize;
-    payload["num_frames_per_chunk"] = 4;
-    payload["vlm_input_width"] = 2048;
-    payload["vlm_input_height"] = 1536;
-    payload["chunk_overlap_duration"] = 0;
+    payload["num_frames_per_chunk"] = numFramesPerChunk;
+    payload["vlm_input_width"] = vlmInputWidth;
+    payload["vlm_input_height"] = vlmInputHeight;
+    payload["chunk_overlap_duration"] = chunkOverlapDuration;
     payload["summarize"] = true;
-    payload["enable_cv_metadata"]=true;
-    payload["enable_chat"] = false;
+    payload["enable_cv_metadata"] = enableCVmeta;
+    payload["enable_chat"] = enableChat;
     payload["cv_pipeline_prompt"] = cvPrompt;
 
-    payload["max_tokens"] = 512;
-    payload["temperature"] = 0.4;
-    payload["top_p"] = 1.0;
-    payload["top_k"] = 100.0;
-    payload["summarize_batch_size"] = 6;
-    payload["summarize_max_tokens"] = 2048;
+    payload["max_tokens"] = maxTokens;
+    payload["temperature"] = temperature;
+    payload["top_p"] = topP;
+    payload["top_k"] = topK;
+    payload["summarize_batch_size"] = summarBatchSize;
+    payload["summarize_max_tokens"] = summarMaxTokens;
 
 
     QJsonDocument doc = QJsonDocument(payload);
     QByteArray data = doc.toJson(QJsonDocument::Compact);
 
-    QNetworkRequest req = makeRequest(SUMMARIZE_ENDPOINT);
+    QNetworkRequest req = makeRequest(summarizeEndpoint);
 
     QNetworkReply* reply = manager->post(req, data);
 
@@ -279,15 +311,13 @@ void VssAPI::summarize(const QString& videoPath)
 
             });
 
-    connect(reply, &QNetworkReply::finished, [reply, timer, videoPath, this](){
+    connect(reply, &QNetworkReply::finished, [reply, videoPath, this](){
 
         QVariant statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute);
         QVariant reason = reply->attribute(QNetworkRequest::HttpReasonPhraseAttribute);
 
         QByteArray responseData = reply->readAll();
         QJsonObject rootObj = QJsonDocument::fromJson(responseData).object();
-        qDebug() << "rootObj";
-        qDebug() << rootObj;
         QJsonArray choices = rootObj["choices"].toArray();
         QJsonObject choice = choices[0].toObject();
         QJsonObject message = choice["message"].toObject();
@@ -295,9 +325,6 @@ void VssAPI::summarize(const QString& videoPath)
 
         QJsonObject usage = rootObj["usage"].toObject();
         int processingTime = usage["query_processing_time"].toInt();
-
-        qDebug() << "content: ";
-        qDebug() << content;
 
         Writter::info(QString("Summarazing infer time : %1 sec").arg(processingTime));
 
@@ -327,12 +354,9 @@ void VssAPI::summarize(const QString& videoPath)
             return;
         }
 
-        quint64 inferTime = timer->elapsed();
-
-        Writter::info(QString("Completed SUMMARIZE inference time (%1)msec").arg(inferTime));
         reply->deleteLater();
 
-        summTimes.push_back(inferTime);
+        summTimes.push_back(processingTime);
         ctn++;
 
         if(ctn == 10)
@@ -378,7 +402,7 @@ void VssAPI::qna(const QString& videoPath)
 
     QByteArray data = QJsonDocument(payload).toJson();
 
-    QNetworkRequest req = makeRequest(QNA_ENDPOINT);
+    QNetworkRequest req = makeRequest(qnaEndpoint);
 
     QNetworkReply* reply = manager->post(req, data);
 
@@ -413,4 +437,5 @@ void VssAPI::onError(QNetworkReply::NetworkError error)
     if (reply)
         Writter::error(reply->errorString());
 }
+
 

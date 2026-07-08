@@ -43,6 +43,8 @@ void VSSLog::initWriter(const QString& path)
             logFile.write(doc.toJson(QJsonDocument::Indented));
             logFile.close();
         }
+
+        Writter::info(QString("Success to create log file: %1").arg(path));
     }
 }
 

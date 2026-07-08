@@ -1,14 +1,14 @@
 #include "server.h"
+#include <toml.hpp>
 
 VideoServer::VideoServer(QString name, quint16 port, QObject *parent)
     : QObject(parent), m_uploading(false), m_port(port), name(name)
 {
 
-    ffmpeg = new QProcess(this);
+    auto data = toml::parse(CONFIG_FILE.toStdString());
+    savePath = QString::fromStdString(toml::find<std::string>(data,"setting","video_path"));
 
-    // TODO
-    // Config logPath
-    logger = new VSSLog("");
+    ffmpeg = new QProcess(this);
 
     // video socket new connection event
     connect(&m_server, &QTcpServer::newConnection,
@@ -29,8 +29,7 @@ VideoServer::VideoServer(QString name, quint16 port, QObject *parent)
                     .arg(name).arg(port+100));
 
 
-
-    QDir().mkpath("/home/cscho/vss");
+    QDir().mkpath(savePath);
 }
 
 void VideoServer::sendToClient(const QString& videoPath, const QString& answer)
@@ -77,6 +76,9 @@ VideoServer::~VideoServer()
 
     m_clients.clear();
 
+    if(metaSocket)
+        metaSocket->deleteLater();
+
 }
 
 bool VideoServer::ensureFfmpegRunning(QTcpSocket *socket, ClientContext *ctx)
@@ -99,9 +101,9 @@ bool VideoServer::ensureFfmpegRunning(QTcpSocket *socket, ClientContext *ctx)
 
     peerIp.replace(":", "_");
 
-    QString dirPath = QString("/home/cscho/vss/%1").arg(fileName);
+    QString dirPath = QString("%1/%2").arg(savePath, fileName);
 
-    QDir().mkdir("/home/cscho/vss");
+    QDir().mkdir(savePath);
 
     ctx->savePath = dirPath;
 
@@ -271,7 +273,7 @@ void VideoServer::onDisconnected()
 
                 qint64 avg =  sum / encodeTimes.size();
 
-                QString encodLog = QString("Encoding ( Max : %1, Min : %2, Avg : %3").arg(maxValue).arg(minValue).arg(avg);
+                QString encodLog = QString("Encoding ( Max : %1, Min : %2, Avg : %3 )").arg(maxValue).arg(minValue).arg(avg);
 
                 Writter::info(encodLog);
             }
