@@ -24,8 +24,8 @@ ServerManager::ServerManager(QObject* parent) : QObject(parent), vssPort(4303)
     server3 = std::make_shared<VideoServer>("cam3", 5002);
 
 #ifdef TEST
-    auto data = toml::parse(CONFIG_FILE.toStdString());
-    QString testFilePath = QString::fromStdString(toml::find<std::string>(data,"setting","test_data"));
+    auto testData = toml::parse(CONFIG_FILE.toStdString());
+    QString testFilePath = QString::fromStdString(toml::find<std::string>(testData,"setting","test_data"));
 
     QFile fi(testFilePath);
     if(!fi.open(QIODevice::ReadOnly))
@@ -101,22 +101,15 @@ void ServerManager::onNewConnection()
 #ifdef TEST
 void ServerManager::test(const QString& path)
 {
-    QFileInfo fi(path);
-    QString fileName = fi.baseName();
+//    QFileInfo fi(path);
+//    QString fileName = fi.baseName();
 
     VssInfo vssInfo;
-
-    QRegularExpression re("(Sensor_Data_\\d{8})\\d*_(cam\\d+)");
-    QRegularExpressionMatch match = re.match(fileName);
-    if (match.hasMatch())
-    {
-        clip.sensorName = match.captured(1);
-        clip.camName    = match.captured(2);
-    }
 
     TestData td = testList.dequeue();
     QString weather = td.weather.trimmed().toLower();
     QString event = td.event.trimmed().toLower();
+
 
     if(weather.contains("snow"))
         vssInfo.weather = 0x04;
