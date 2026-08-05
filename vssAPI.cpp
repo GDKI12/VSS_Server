@@ -188,6 +188,12 @@ void VssAPI::requestTest(const QString& videoPath)
 
 void VssAPI::uploadVideo(const QString& videoPath)
 {
+    if(!batchTimerFlag)
+    {
+        timer.start();
+        batchTimerFlag = true;
+    }
+
     initialize();
 
     QFile* video = new QFile(videoPath);
@@ -250,17 +256,17 @@ void VssAPI::uploadVideo(const QString& videoPath)
             return;
         }
 
-        videoId = QJsonDocument::fromJson(res).object()["id"].toString();
+        QString videoId = QJsonDocument::fromJson(res).object()["id"].toString();
 
         Writter::info(QString("Success to upload (videoId = %1)").arg(videoId));
 
-        summarize(videoPath);
+        summarize(videoId, videoPath);
 
         reply->deleteLater();
     });
 }
 
-void VssAPI::summarize(const QString& videoPath)
+void VssAPI::summarize(const QString& videoId, const QString& videoPath)
 {
     QJsonObject prompts;
     prompts["vlm_prompt"] = vlmPrompt;
@@ -319,6 +325,7 @@ void VssAPI::summarize(const QString& videoPath)
         QByteArray responseData = reply->readAll();
         QJsonObject rootObj = QJsonDocument::fromJson(responseData).object();
         QJsonArray choices = rootObj["choices"].toArray();
+        QString summarizeId = rootObj["id"].toString();
         QJsonObject choice = choices[0].toObject();
         QJsonObject message = choice["message"].toObject();
         QString content = message["content"].toString();
@@ -350,7 +357,7 @@ void VssAPI::summarize(const QString& videoPath)
             emit uploadFailed(currentVideoPath, err);
 
             reply->deleteLater();
-            startNextUpload();
+//            startNextUpload();
             return;
         }
 
@@ -382,8 +389,18 @@ void VssAPI::summarize(const QString& videoPath)
             }
         }
 
-        emit requestToSend(videoPath, content);
-        startNextUpload();
+        camFlag++;
+
+        if(camFlag == 3)
+        {
+            quint64 elapsedMs = timer.elapsed();
+            Writter::info(QString("Total Summarzie time is %1").arg(elapsedMs));
+            camFlag=0;
+            batchTimerFlag = false;
+        }
+        Writter::info(QString("End to Summarize of %1").arg(summarizeId));
+        emit requestToSend(videoPath, content, processingTime);
+//        startNextUpload();
         });
 }
 
@@ -396,7 +413,7 @@ void VssAPI::qna(const QString& videoPath)
     });
 
     QJsonObject payload;
-    payload["id"] = videoId;
+//    payload["id"] = videoId;
     payload["messages"] = messages;
     payload["model"] = modelId;
 
@@ -423,7 +440,7 @@ void VssAPI::qna(const QString& videoPath)
 
         Writter::info(QString("Get answer from VSS : %1").arg(answer));
 
-        emit uploadFinished(videoPath, videoId);
+//        emit uploadFinished(videoPath, videoId);
 
         reply->deleteLater();
         startNextUpload();

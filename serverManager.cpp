@@ -57,9 +57,9 @@ ServerManager::ServerManager(QObject* parent) : QObject(parent), vssPort(4303)
     connect(server2.get(), &VideoServer::requestEnqueue, apiManager, &VssAPI::enqueueUpload);
     connect(server3.get(), &VideoServer::requestEnqueue, apiManager, &VssAPI::enqueueUpload);
 
-    connect(server1.get(), &VideoServer::requestLog, this, &ServerManager::getReplies);
-    connect(server2.get(), &VideoServer::requestLog, this, &ServerManager::getReplies);
-    connect(server3.get(), &VideoServer::requestLog, this, &ServerManager::getReplies);
+    connect(server1.get(), &VideoServer::requestSummarize, apiManager, &VssAPI::uploadVideo);
+    connect(server2.get(), &VideoServer::requestSummarize, apiManager, &VssAPI::uploadVideo);
+    connect(server3.get(), &VideoServer::requestSummarize, apiManager, &VssAPI::uploadVideo);
 
     connect(apiManager, &VssAPI::requestToSend, this, &ServerManager::getReplies);
     connect(this, &ServerManager::finishedSendToClient, apiManager, &VssAPI::startNextUpload);
@@ -207,7 +207,7 @@ void ServerManager::getInitParams()
                   .arg(initConfig.camSize).arg(initConfig.videoLength).arg(initConfig.fps));
 }
 
-void ServerManager::getReplies(const QString& videoPath, const QString& text)
+void ServerManager::getReplies(const QString& videoPath, const QString& text, int inferTime)
 {
     ClipInfo clip;
     VssInfo vssInfo;
@@ -219,20 +219,14 @@ void ServerManager::getReplies(const QString& videoPath, const QString& text)
 
     for(auto itr = lines.begin(); itr != lines.end(); itr++)
     {
-        if(*itr == "[Weather]")
+        QString line = *itr;
+        QStringList syntex = line.split(':');
+        if(syntex[0] == "Weather")
         {
-            if(itr+1 == lines.end())
-                result["Weather"] = "";
-            else
-                result["Weather"] = *(itr+1);
-
-        }
-        else if(*itr == "[Event]")
+            result["Weather"] = syntex[1];
+        }else if(syntex[0] == "Event")
         {
-            if(itr+1 == lines.end())
-                result["Event"] = "";
-            else
-                result["Event"] = *(itr+1);
+            result["Event"] = syntex[1];
         }
     }
 
@@ -281,14 +275,21 @@ void ServerManager::getReplies(const QString& videoPath, const QString& text)
         vssInfo.isEvent = 0x01;
 
     taskPool.push_back(vssInfo);
+    inferTimeList.push_back(inferTime);
 
     Writter::info(QString("Current cam is %1").arg(taskPool.size()));
     Writter::info(QString("Weather: %1, Event: %2").arg(clip.weather, clip.event));
 
     if(taskPool.size() == initConfig.camSize)
     {
-        Writter::info("Request to client~");
+        float totalTime = 0;
+        for(int i = 0; i < taskPool.size(); i++)
+            totalTime += inferTimeList[i];
 
+        totalTime = totalTime/taskPool.size();
+
+        Writter::info(QString("All Summarize process is Done, Mean Time is %1").arg(totalTime));
+        Writter::info("Request to client~");
         VssInfo totalInfo;
         totalInfo.weather = 0x00;
         totalInfo.eventType = 0x00;
@@ -309,5 +310,6 @@ void ServerManager::getReplies(const QString& videoPath, const QString& text)
 
         sendToClient(totalInfo);
         taskPool.clear();
+        inferTimeList.clear();
     }
 }

@@ -29,7 +29,7 @@ private slots:
 
 signals:
     void requestEnqueue(const QString&);
-    void requestLog(const QString& sensorName, const QString& answer, const QString& videoPath);
+    void requestSummarize(const QString&);
 
 private:
     QMutex ffmpegMutex;

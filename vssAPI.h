@@ -24,20 +24,25 @@ public slots:
     void onError(QNetworkReply::NetworkError error);
     void requestTest(const QString& videoPath);
     void startNextUpload();
+    void uploadVideo(const QString& videoPath);
 
 signals:
     void uploadFinished(const QString& videoPath, const QString& videoId);
     void uploadFailed(const QString& videoPath, const QString& reason);
-    void requestToSend(const QString& videoPath, const QString& answer);
+    void requestToSend(const QString& videoPath, const QString& answer, int inferTime);
     void onTest(const QString& videoPath);
 private:
-    void uploadVideo(const QString& videoPath);
-    void summarize(const QString& videoPath);
+    void summarize(const QString& videoId, const QString& videoPath);
     void qna(const QString& videoPath);
     VssInfo createPacket(const ClipInfo&);
     QNetworkRequest makeRequest(const QString& url);
 
 private:
+    QElapsedTimer timer;
+    bool batchTimerFlag = false;
+
+    int camFlag = 0;
+
     QString vssURL;
     QString healthyEndpoint;
     QString modelEndpoint;
@@ -55,7 +60,6 @@ private:
 
     QString logPath;
 
-    QString videoId;
     QString modelId;
 
     QString vlmPrompt;

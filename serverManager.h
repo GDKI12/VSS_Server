@@ -15,7 +15,7 @@ public:
     void terminate();
 public slots:
     void onNewConnection();
-    void getReplies(const QString&, const QString&);
+    void getReplies(const QString&, const QString&, int);
     void getInitParams();
 #ifdef TEST
     void test(const QString&);
@@ -39,6 +39,7 @@ private:
     int vssPort;
 
     QVector<VssInfo> taskPool;
+    QVector<int> inferTimeList;
 #ifdef TEST
     QQueue<TestData> testList;
 #endif

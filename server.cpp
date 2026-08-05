@@ -45,7 +45,7 @@ void VideoServer::sendToClient(const QString& videoPath, const QString& answer)
     dirName = dirPath.split('/').last();
 
     // request write log
-    emit requestLog(dirName, answer, videoPath);
+//    emit requestLog(dirName, answer, videoPath);
 
     obj["fileName"] = dirName;
     obj["answer"] = answer;
@@ -296,7 +296,8 @@ void VideoServer::onDisconnected()
             Writter::info(ffmpegLog);
 
             const QString savePath = ctx->savePath;
-            emit requestEnqueue(savePath);
+//            emit requestEnqueue(savePath);
+            emit requestSummarize(savePath);
 
         } else {
             Writter::warn(QString("Saved file is  missing or empty : %1").arg(ctx->savePath));
