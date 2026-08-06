@@ -289,7 +289,7 @@ void ServerManager::getReplies(const QString& videoPath, const QString& text, in
         totalTime = totalTime/taskPool.size();
 
         Writter::info(QString("All Summarize process is Done, Mean Time is %1").arg(totalTime));
-        Writter::info("Request to client~");
+        Writter::info("Request sent to client");
         VssInfo totalInfo;
         totalInfo.weather = 0x00;
         totalInfo.eventType = 0x00;

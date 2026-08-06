@@ -400,7 +400,7 @@ void VssAPI::summarize(const QString& videoId, const QString& videoPath)
         }
         Writter::info(QString("End to Summarize of %1").arg(summarizeId));
         emit requestToSend(videoPath, content, processingTime);
-//        startNextUpload();
+        startNextUpload();
         });
 }
 
