@@ -296,8 +296,8 @@ void VideoServer::onDisconnected()
             Writter::info(ffmpegLog);
 
             const QString savePath = ctx->savePath;
-            emit requestEnqueue(savePath);
-//            emit requestSummarize(savePath);
+//            emit requestEnqueue(savePath);
+            emit requestSummarize(savePath);
 
         } else {
             Writter::warn(QString("Saved file is  missing or empty : %1").arg(ctx->savePath));

@@ -46,25 +46,27 @@ enum class LogLevel{
 Q_DECLARE_METATYPE(LogLevel)
 struct InitConfig
 {
-    int camSize;
-    int videoLength;
+    int channel;
     int fps;
+    int clipLengthSec;
+    int targetScenes;
+
+    QString deviceType;
+
+    QList<QString> weather;
+    QList<QString> time;
+    QList<QString> roadEnv;
+    QList<QString> scenario;
 };
 
-struct VssInfo
-{
-    uint8_t isEvent;
-    uint8_t weather;
-    uint8_t eventType;
-};
 
 struct ClipInfo
 {
-    QString camName;
     QString sensorName;
-    QString videoPath;
-    QString weather;
-    QString event;
+    QList<QString> weather;
+    QList<QString> timeOfDay;
+    QList<QString> roadType;
+    QList<QString> event;
 };
 
 struct ClientContext {

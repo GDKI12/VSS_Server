@@ -30,7 +30,6 @@ void VSSLog::initWriter(const QString& path)
         if(data.isEmpty())
         {
             QJsonObject rootObj;
-            rootObj["id"] = 1;
             rootObj["scenes"] = QJsonArray();
 
             QJsonDocument doc = QJsonDocument(rootObj);
@@ -49,7 +48,7 @@ void VSSLog::initWriter(const QString& path)
 }
 
 
-void VSSLog::addLog(const ClipInfo& log)
+void VSSLog::addLog(QMap<QString, QString> result)
 {
 
     if(!logFile.open(QIODevice::ReadOnly))
@@ -76,18 +75,20 @@ void VSSLog::addLog(const ClipInfo& log)
     {
         QJsonObject sceneObj = scenes[i].toObject();
 
-        if(sceneObj["scene"].toString() != log.sensorName)
+        if(sceneObj["scene"].toString() != result["sensorName"])
             continue;
 
         QJsonArray frames = sceneObj["frames"].toArray();
 
         QJsonObject newObj;
-        newObj["frame_id"] = frames.size() + 1;
-        newObj["camId"] = log.camName;
-        newObj["video_length"] = 10;
-        newObj["videoPath"] = log.videoPath;
-        newObj["weather"] = log.weather;
-        newObj["event"] = log.event;
+
+        for(auto itr = result.constBegin(); itr != result.constEnd(); itr++)
+        {
+            if(itr.key() == "sensorName")
+                continue;
+
+            newObj[itr.key()] = itr.value();
+        }
 
         frames.append(newObj);
         sceneObj["frames"] = frames;
@@ -101,18 +102,19 @@ void VSSLog::addLog(const ClipInfo& log)
     {
         QJsonObject newObj;
 
-        newObj["frame_id"] = 1;
-        newObj["camId"] = log.camName;
-        newObj["video_length"] = 10;
-        newObj["videoPath"] = log.videoPath;
-        newObj["weather"] = log.weather;
-        newObj["event"] = log.event;
+        for(auto itr = result.constBegin(); itr != result.constEnd(); itr++)
+        {
+            if(itr.key() == "sensorName")
+                continue;
+
+            newObj[itr.key()] = itr.value();
+        }
 
         QJsonArray newFrames;
         newFrames.append(newObj);
 
         QJsonObject newScene;
-        newScene["scene"] = log.sensorName;
+        newScene["scene"] = result["sensorName"];
         newScene["frames"] = newFrames;
 
         scenes.append(newScene);

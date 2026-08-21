@@ -25,16 +25,19 @@ public slots:
     void requestTest(const QString& videoPath);
     void startNextUpload();
     void uploadVideo(const QString& videoPath);
+    void testSummarize(const QString& videoId, const QString& videoPath);
 
 signals:
     void uploadFinished(const QString& videoPath, const QString& videoId);
     void uploadFailed(const QString& videoPath, const QString& reason);
     void requestToSend(const QString& videoPath, const QString& answer, int inferTime);
     void onTest(const QString& videoPath);
+    void vssStatus(bool);
+
+    void doneSummarizeTest(const QString& videoPath, const QString& answer, int inferTime);
 private:
     void summarize(const QString& videoId, const QString& videoPath);
     void qna(const QString& videoPath);
-    VssInfo createPacket(const ClipInfo&);
     QNetworkRequest makeRequest(const QString& url);
 
 private:
@@ -82,10 +85,7 @@ private:
     int vlmInputHeight;
 
     bool enableChat;
+    bool enableChatHistory;
     bool enableCVmeta;
-
-    QVector<qint64> summTimes;
-
-    int ctn;
 };
 

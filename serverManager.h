@@ -11,21 +11,25 @@ class ServerManager : public QObject
 public:
     explicit ServerManager(QObject* parent = nullptr);
     ~ServerManager();
-    void sendToClient(const VssInfo&);
+    void sendToClient(ClipInfo clipInfo);
     void terminate();
+    void videoTestInit();
+    void testStart();
+
 public slots:
     void onNewConnection();
     void getReplies(const QString&, const QString&, int);
     void getInitParams();
+    void responseTo(bool status);
+    void saveTestLog(const QString& videoPath, const QString& answer, int inferTime);
 #ifdef TEST
     void test(const QString&);
 #endif
 signals:
-    void requestToAddLog(const ClipInfo&);
+    void requestToAddLog(QMap<QString, QString>);
     void finishedSendToClient();
 
 private:
-    InitConfig initConfig;
     std::shared_ptr<VideoServer> server1;
     std::shared_ptr<VideoServer> server2;
     std::shared_ptr<VideoServer> server3;
@@ -33,13 +37,25 @@ private:
     VSSLog* logger = nullptr;
     VssAPI* apiManager = nullptr;
 
+    // 미션 설정값
+    QByteArray paramBuffer;
+    InitConfig initConfig;
+
     QTcpServer vssServer;
 
     QTcpSocket* vssSocket = nullptr;
+
     int vssPort;
 
-    QVector<VssInfo> taskPool;
     QVector<int> inferTimeList;
+    ClipInfo clipInfos;
+
+    //Test시 사용
+    QQueue<QString> testVideoQue;
+
+    QMutex mutex;
+
+
 #ifdef TEST
     QQueue<TestData> testList;
 #endif

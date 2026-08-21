@@ -1,4 +1,5 @@
 #include "serverManager.h"
+#include <QDataStream>
 #include <toml.hpp>
 
 ServerManager::ServerManager(QObject* parent) : QObject(parent), vssPort(4303)
@@ -8,7 +9,6 @@ ServerManager::ServerManager(QObject* parent) : QObject(parent), vssPort(4303)
     auto data = toml::parse(CONFIG_FILE.toStdString());
     QString savePath = QString::fromStdString(toml::find<std::string>(data,"setting","video_path"));
 
-    connect(&vssServer, &QTcpServer::newConnection, this, &ServerManager::onNewConnection);
 
     if(!vssServer.listen(QHostAddress::Any, vssPort))
         Writter::error("Connected to vss server is failed");
@@ -22,6 +22,24 @@ ServerManager::ServerManager(QObject* parent) : QObject(parent), vssPort(4303)
     server1 = std::make_shared<VideoServer>("cam1", 5000);
     server2 = std::make_shared<VideoServer>("cam2", 5001);
     server3 = std::make_shared<VideoServer>("cam3", 5002);
+
+    connect(&vssServer, &QTcpServer::newConnection, this, &ServerManager::onNewConnection);
+    connect(server1.get(), &VideoServer::requestEnqueue, apiManager, &VssAPI::enqueueUpload);
+    connect(server2.get(), &VideoServer::requestEnqueue, apiManager, &VssAPI::enqueueUpload);
+    connect(server3.get(), &VideoServer::requestEnqueue, apiManager, &VssAPI::enqueueUpload);
+
+    connect(server1.get(), &VideoServer::requestSummarize, apiManager, &VssAPI::uploadVideo);
+    connect(server2.get(), &VideoServer::requestSummarize, apiManager, &VssAPI::uploadVideo);
+    connect(server3.get(), &VideoServer::requestSummarize, apiManager, &VssAPI::uploadVideo);
+
+    connect(apiManager, &VssAPI::requestToSend, this, &ServerManager::getReplies);
+    connect(apiManager, &VssAPI::doneSummarizeTest, this, &ServerManager::saveTestLog);
+    connect(this, &ServerManager::finishedSendToClient, apiManager, &VssAPI::startNextUpload);
+
+    connect(this, &ServerManager::requestToAddLog, logger, &VSSLog::addLog);
+    connect(apiManager, &VssAPI::vssStatus, this, &ServerManager::responseTo);
+
+//    videoTestInit();
 
 #ifdef TEST
     auto testData = toml::parse(CONFIG_FILE.toStdString());
@@ -51,23 +69,8 @@ ServerManager::ServerManager(QObject* parent) : QObject(parent), vssPort(4303)
 
     Writter::info(QString("Gathered test data, data size: %1").arg(testList.size()));
 
-#endif
-
-    connect(server1.get(), &VideoServer::requestEnqueue, apiManager, &VssAPI::enqueueUpload);
-    connect(server2.get(), &VideoServer::requestEnqueue, apiManager, &VssAPI::enqueueUpload);
-    connect(server3.get(), &VideoServer::requestEnqueue, apiManager, &VssAPI::enqueueUpload);
-
-    connect(server1.get(), &VideoServer::requestSummarize, apiManager, &VssAPI::uploadVideo);
-    connect(server2.get(), &VideoServer::requestSummarize, apiManager, &VssAPI::uploadVideo);
-    connect(server3.get(), &VideoServer::requestSummarize, apiManager, &VssAPI::uploadVideo);
-
-    connect(apiManager, &VssAPI::requestToSend, this, &ServerManager::getReplies);
-    connect(this, &ServerManager::finishedSendToClient, apiManager, &VssAPI::startNextUpload);
-
-#ifdef TEST
     connect(apiManager, &VssAPI::onTest, this, &ServerManager::test);
 #endif
-    connect(this, &ServerManager::requestToAddLog, logger, &VSSLog::addLog);
 }
 
 ServerManager::~ServerManager()
@@ -76,6 +79,67 @@ ServerManager::~ServerManager()
         vssSocket->disconnectFromHost();
     if(vssSocket)
         vssSocket->deleteLater();
+}
+
+void ServerManager::saveTestLog(const QString& videoPath, const QString& answer, int inferTime)
+{
+    qDebug() << "Start to saveTestLog";
+    qDebug() << "Video list size" << testVideoQue.size();
+    QFile file("/home/cscho/vss_log/test.json");
+    QStringList lines = answer.split('\n');
+
+    QMap<QString, QString> result;
+
+    for(auto itr = lines.constBegin(); itr != lines.constEnd(); itr++)
+    {
+        QString line = *itr;
+        if(!line.contains(":"))
+            continue;
+
+        QStringList syntex = line.split(':');
+        result[syntex[0]] = syntex[1].trimmed();
+    }
+    result["videoPath"] = videoPath;
+
+    QJsonObject newObj;
+    for(auto itr = result.constBegin(); itr != result.constEnd(); itr++)
+    {
+        if(itr.key() == "sensorName")
+            continue;
+
+        newObj[itr.key()] = itr.value();
+    }
+
+    if(!file.open(QIODevice::WriteOnly | QIODevice::Append)){
+        return;
+    }
+
+    file.close();
+
+    if(!file.open(QIODevice::ReadOnly))
+        return;
+
+    QByteArray data = file.readAll();
+    file.close();
+
+    QJsonDocument doc = QJsonDocument::fromJson(data);
+    QJsonArray rootArr = doc.array();
+
+    rootArr.append(newObj);
+
+    QJsonDocument newDoc = QJsonDocument(rootArr);
+    if(!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        return;
+
+    file.write(newDoc.toJson(QJsonDocument::Indented));
+    file.close();
+
+    if(testVideoQue.isEmpty())
+    {
+        qDebug() << "End to Test";
+        return;
+    }
+    testStart();
 }
 
 void ServerManager::terminate()
@@ -161,16 +225,58 @@ void ServerManager::test(const QString& path)
     emit finishedSendToClient();
 }
 #endif
-void ServerManager::sendToClient(const VssInfo& result)
+void ServerManager::sendToClient(ClipInfo clipInfo)
 {
     Writter::info("Strat to send");
+
+    bool result = false;
+
+    QString weatherInfo;
+    QString timeInfo;
+    QString roadInfo;
+    QString eventInfo;
+
+    for(const QString& str : initConfig.weather)
+    {
+        if(clipInfo.weather.contains(str))
+        {
+            result = true;
+            return;
+        }
+    }
+
+    for(const QString& str : initConfig.time)
+    {
+        if(clipInfo.timeOfDay.contains(str))
+        {
+            result = true;
+            return;
+        }
+    }
+
+    for(const QString& str : initConfig.roadEnv)
+    {
+        if(clipInfo.roadType.contains(str))
+        {
+            result = true;
+            return;
+        }
+    }
+
+    for(const QString& str : initConfig.scenario)
+    {
+        if(clipInfo.event.contains(str))
+        {
+            result = true;
+            return;
+        }
+    }
 
 
     QJsonObject obj;
 
-    obj["isEvent"] = result.isEvent;
-    obj["weather"] = result.weather;
-    obj["eventType"] = result.eventType;
+    obj["isSave"] = result;
+    obj["sensorName"] = clipInfo.sensorName;
     QByteArray data = QJsonDocument(obj).toJson(QJsonDocument::Compact);
     data.append("\n");
 
@@ -195,39 +301,104 @@ void ServerManager::getInitParams()
         terminate();
         return;
     }
-    Writter::info("Start to init params");
-    QByteArray buffer;
-    buffer.append(socket->readAll());
+    Writter::info("Get mission");
 
-    Writter::info(QString("Init prams: %1").arg(QString::fromUtf8(buffer)));
+    paramBuffer.append(socket->readAll());
 
-    memcpy(&initConfig, buffer.constData(), sizeof(InitConfig));
+    constexpr int HEADER_SIZE = sizeof(quint32);
 
-    Writter::info(QString("Get init parmas camSize : %1, videoLength : %2, fps : %3")
-                  .arg(initConfig.camSize).arg(initConfig.videoLength).arg(initConfig.fps));
+
+    while (true) {
+        if(paramBuffer.size() < HEADER_SIZE)
+             return;
+
+         QDataStream headerStream(paramBuffer);
+         headerStream.setByteOrder(QDataStream::BigEndian);
+
+         quint32 dataSize = 0;
+         headerStream >> dataSize;
+
+         if(paramBuffer.size() < HEADER_SIZE + static_cast<int>(dataSize))
+             return;
+
+         const QByteArray initData =
+             paramBuffer.mid(HEADER_SIZE, dataSize);
+
+         paramBuffer.remove(
+             0,
+             HEADER_SIZE + static_cast<int>(dataSize)
+         );
+
+         QDataStream dataStream(initData);
+         dataStream.setByteOrder(QDataStream::BigEndian);
+
+         dataStream >> this->initConfig.channel;
+         dataStream >> this->initConfig.fps;
+         dataStream >> this->initConfig.clipLengthSec;
+         dataStream >> this->initConfig.targetScenes;
+         dataStream >> this->initConfig.deviceType;
+         dataStream >> this->initConfig.weather;
+         dataStream >> this->initConfig.time;
+         dataStream >> this->initConfig.roadEnv;
+         dataStream >> this->initConfig.scenario;
+
+         for(QString& str : initConfig.weather)
+             str = str.toLower();
+
+         for(QString& str : initConfig.time)
+             str = str.toLower();
+
+         for(QString& str : initConfig.roadEnv)
+             str = str.toLower();
+
+         for(QString& str : initConfig.scenario)
+             str = str.toLower();
+
+         if(dataStream.status() != QDataStream::Ok)
+         {
+             Writter::error("Init parameter decode failed");
+             continue;
+         }
+
+        Writter::info("Get Mission data");
+        apiManager->requestHealth();
+        return;
+
+    }
 }
 
+void ServerManager::responseTo(bool status)
+{
+    qDebug() << "Start to response";
+    qDebug() << "Status is " << status;
+    QJsonObject obj;
+    obj["isReady"] = status;
+    QByteArray data = QJsonDocument(obj).toJson(QJsonDocument::Compact);
+    data.append("\n");
+
+    if(vssSocket && vssSocket->state() == QAbstractSocket::ConnectedState)
+    {
+        vssSocket->write(data);
+        vssSocket->flush();
+    }else{
+
+    }
+}
 void ServerManager::getReplies(const QString& videoPath, const QString& text, int inferTime)
 {
-    ClipInfo clip;
-    VssInfo vssInfo;
     QMap<QString, QString> result;
 
-    QString currSection;
     QStringList lines = text.split('\n');
 
 
     for(auto itr = lines.begin(); itr != lines.end(); itr++)
     {
         QString line = *itr;
+        if(!line.contains(":"))
+            continue;
+
         QStringList syntex = line.split(':');
-        if(syntex[0] == "Weather")
-        {
-            result["Weather"] = syntex[1];
-        }else if(syntex[0] == "Event")
-        {
-            result["Event"] = syntex[1];
-        }
+        result[syntex[0].trimmed()] = syntex[1].trimmed().toLower();
     }
 
     QFileInfo fi(videoPath);
@@ -238,78 +409,108 @@ void ServerManager::getReplies(const QString& videoPath, const QString& text, in
 
     if (match.hasMatch())
     {
-        clip.sensorName = match.captured(1);
-        clip.camName    = match.captured(2);
+        result["sensorName"] = match.captured(1);
+        result["camName"]    = match.captured(2);
     }
 
-    clip.event = result["Event"].trimmed().toLower();
-    clip.weather = result["Weather"].trimmed().toLower();
-    clip.videoPath = videoPath;
+    result["videoPath"] = videoPath;
 
-    emit requestToAddLog(clip);
+    // 로그 추가
+    Writter::info("Request to add log");
+    emit requestToAddLog(result);
 
+    if(clipInfos.sensorName.isEmpty())
+    {
+        clipInfos.sensorName = result["sensorName"];
+    }
 
-    if(clip.weather.contains("snow"))
-        vssInfo.weather = 0x04;
-    else if(clip.weather.contains("rain"))
-        vssInfo.weather = 0x03;
-    else if(clip.weather.contains("fog"))
-        vssInfo.weather = 0x02;
-    else if(clip.weather.contains("overcast"))
-        vssInfo.weather = 0x01;
-    else
-        vssInfo.weather = 0x00;
+    if(result.contains("Weather"))
+    {
+        if(result["Weather"].contains("clear"))
+            clipInfos.weather.append("clear");
+        else if(result["Weather"].contains("overcast"))
+            clipInfos.weather.append("overcast");
+        else if(result["Weather"].contains("fog"))
+            clipInfos.weather.append("fog");
+        else if(result["Weather"].contains("rain"))
+            clipInfos.weather.append("rain");
+        else if(result["Weather"].contains("snow"))
+            clipInfos.weather.append("snow");
+    }
 
-    if(clip.event.contains("traffic accident"))
-        vssInfo.eventType = 0x03;
-    else if(clip.event.contains("road construction"))
-        vssInfo.eventType = 0x02;
-    else if(clip.event.contains("jaywalking"))
-        vssInfo.eventType = 0x01;
-    else
-        vssInfo.eventType = 0x00;
+    if(result.contains("Time"))
+    {
+        if(result["Time"].contains("daytime"))
+            clipInfos.weather.append("daytime");
+        else if(result["Time"].contains("nighttime"))
+            clipInfos.weather.append("nighttime");
+    }
 
-    if(vssInfo.weather == 0x00 && vssInfo.eventType == 0x00)
-        vssInfo.isEvent = 0x00;
-    else
-        vssInfo.isEvent = 0x01;
+    if(result.contains("Road"))
+    {
+        if(result["Road"].contains("hightway"))
+            clipInfos.roadType.append("hightway");
+        else if(result["Road"].contains("urban_arterial"))
+            clipInfos.roadType.append("urban_arterial");
+        else if(result["Road"].contains("urban_local"))
+            clipInfos.roadType.append("urban_local");
+        else if(result["Road"].contains("parking_area"))
+            clipInfos.roadType.append("parking_area");
+        else if(result["Road"].contains("unpaved"))
+            clipInfos.roadType.append("unpaved");
+        else
+            clipInfos.roadType.append("unknown");
 
-    taskPool.push_back(vssInfo);
+    }
+
+    if(result.contains("Event"))
+    {
+        if(result["Event"].contains("lane_keep"))
+            clipInfos.event.append("lane_keep");
+        else if(result["Event"].contains("lane_change_merge"))
+            clipInfos.event.append("overtake");
+        else if(result["Event"].contains("inter_sig"))
+            clipInfos.event.append("inter_sig");
+        else if(result["Event"].contains("inter_unsig"))
+            clipInfos.event.append("inter_unsig");
+        else if(result["Event"].contains("inter_round"))
+            clipInfos.event.append("inter_round");
+        else if(result["Event"].contains("ped_cross"))
+            clipInfos.event.append("ped_cross");
+        else if(result["Event"].contains("ped_illegal"))
+            clipInfos.event.append("ped_illegal");
+        else if(result["Event"].contains("construction"))
+            clipInfos.event.append("construction");
+    }
+
     inferTimeList.push_back(inferTime);
 
-    Writter::info(QString("Current cam is %1").arg(taskPool.size()));
-    Writter::info(QString("Weather: %1, Event: %2").arg(clip.weather, clip.event));
-
-    if(taskPool.size() == initConfig.camSize)
+    qDebug() << "TASK POOL SIZE : " << inferTimeList.size();
+    if(inferTimeList.size() == initConfig.channel)
     {
-        float totalTime = 0;
-        for(int i = 0; i < taskPool.size(); i++)
-            totalTime += inferTimeList[i];
-
-        totalTime = totalTime/taskPool.size();
-
-        Writter::info(QString("All Summarize process is Done, Mean Time is %1").arg(totalTime));
         Writter::info("Request sent to client");
-        VssInfo totalInfo;
-        totalInfo.weather = 0x00;
-        totalInfo.eventType = 0x00;
 
-        for(int i = 0; i < taskPool.size() ; i++)
-        {
-            if(taskPool[i].weather >= totalInfo.weather)
-                totalInfo.weather = taskPool[i].weather;
-
-            if(taskPool[i].eventType >= totalInfo.eventType)
-                totalInfo.eventType = taskPool[i].eventType;
-        }
-
-        if(totalInfo.weather == 0x00 && totalInfo.eventType == 0x00)
-            totalInfo.isEvent = 0x00;
-        else
-            totalInfo.isEvent = 0x01;
-
-        sendToClient(totalInfo);
-        taskPool.clear();
         inferTimeList.clear();
+        sendToClient(clipInfos);
     }
+}
+
+void ServerManager::videoTestInit()
+{
+    QString videoRootPath = "/data/cscho/clip";
+    QDir dir(videoRootPath);
+    QFileInfoList fiList = dir.entryInfoList({"*mp4"}, QDir::Files, QDir::Name);
+
+    for(QFileInfo fi : fiList)
+    {
+        testVideoQue.enqueue(fi.absoluteFilePath());
+    }
+
+    testStart();
+}
+
+void ServerManager::testStart()
+{
+    QString videoPath = testVideoQue.dequeue();
+    apiManager->uploadVideo(videoPath);
 }

@@ -13,7 +13,7 @@ public:
     void setLogFileName(const QString&);
 
 public slots:
-    void addLog(const ClipInfo& log);
+    void addLog(QMap<QString, QString> log);
 private:
     QFile logFile;
     QString logPath;

@@ -13,7 +13,7 @@
 #include <toml.hpp>
 
 VssAPI::VssAPI(QObject* parent)
-    : QObject(parent), manager(nullptr), m_uploading(false), ctn(0)
+    : QObject(parent), manager(nullptr), m_uploading(false)
 {
     auto data      = toml::parse(CONFIG_FILE.toStdString());
     vssURL         = QString::fromStdString(toml::find<std::string>(data, "setting", "vss_url"));
@@ -31,6 +31,7 @@ VssAPI::VssAPI(QObject* parent)
     vlmInputHeight         = toml::find<int>(data, "summarize", "vlm_input_height");
 
     enableChat     = toml::find<bool>(data, "summarize", "enable_chat");
+    enableChatHistory = toml::find<bool>(data, "summarize", "enable_chat_history");
     enableCVmeta   = toml::find<bool>(data, "summarize", "enable_cv_meta");
 
     vlmPrompt      = QString::fromStdString(toml::find<std::string>(data, "Vlm", "content"));
@@ -83,17 +84,21 @@ QNetworkRequest VssAPI::makeRequest(const QString& urlStr)
 
 void VssAPI::requestHealth()
 {
+    initialize();
     QNetworkRequest req = makeRequest(healthyEndpoint);
 
     QNetworkReply* reply = manager->get(req);
 
-    connect(reply, SIGNAL(finished()), this, SLOT(deleteLater()));
+    connect(reply, &QNetworkReply::finished, [reply, this]() {
 
-    connect(reply, &QNetworkReply::finished, [reply]() {
-        QString log = "HEALTH >> " + reply->readAll();
-        Writter::info(log);
+        if(reply->error() != QNetworkReply::NoError){
+            Writter::error("HEALTH ERROR >>" + reply->errorString());
+            reply->deleteLater();
+            emit vssStatus(false);
+            return;
+        }
 
-        reply->deleteLater();
+        emit vssStatus(true);
     });
 }
 
@@ -261,6 +266,7 @@ void VssAPI::uploadVideo(const QString& videoPath)
         Writter::info(QString("Success to upload (videoId = %1)").arg(videoId));
 
         summarize(videoId, videoPath);
+//        testSummarize(videoId, videoPath);
 
         reply->deleteLater();
     });
@@ -287,6 +293,7 @@ void VssAPI::summarize(const QString& videoId, const QString& videoPath)
     payload["summarize"] = true;
     payload["enable_cv_metadata"] = enableCVmeta;
     payload["enable_chat"] = enableChat;
+    payload["enable_chat_history"] = enableChatHistory;
     payload["cv_pipeline_prompt"] = cvPrompt;
 
     payload["max_tokens"] = maxTokens;
@@ -357,37 +364,10 @@ void VssAPI::summarize(const QString& videoId, const QString& videoPath)
             emit uploadFailed(currentVideoPath, err);
 
             reply->deleteLater();
-//            startNextUpload();
             return;
         }
 
         reply->deleteLater();
-
-        summTimes.push_back(processingTime);
-        ctn++;
-
-        if(ctn == 10)
-        {
-            if(!summTimes.isEmpty())
-            {
-                auto result = std::minmax_element(summTimes.cbegin(), summTimes.cend());
-
-                qint64 minValue = *result.first;
-                qint64 maxValue = *result.second;
-
-                qint64 sum = 0;
-
-                for(auto itr = summTimes.cbegin(); itr != summTimes.cend(); itr++)
-                    sum += *itr;
-
-                qint64 avg = sum / summTimes.size();
-
-                Writter::info(QString("Summarizes ( Max:%1, Min:%2, Avg:%3 )").arg(maxValue).arg(minValue).arg(avg));
-
-                ctn = 0;
-                summTimes.clear();
-            }
-        }
 
         camFlag++;
 
@@ -398,9 +378,10 @@ void VssAPI::summarize(const QString& videoId, const QString& videoPath)
             camFlag=0;
             batchTimerFlag = false;
         }
+
         Writter::info(QString("End to Summarize of %1").arg(summarizeId));
         emit requestToSend(videoPath, content, processingTime);
-        startNextUpload();
+//        startNextUpload();
         });
 }
 
@@ -455,4 +436,107 @@ void VssAPI::onError(QNetworkReply::NetworkError error)
         Writter::error(reply->errorString());
 }
 
+void VssAPI::testSummarize(const QString& videoId, const QString& videoPath)
+{
+    QJsonObject prompts;
+    prompts["vlm_prompt"] = vlmPrompt;
+    prompts["summarization"] = captionSummari;
+    prompts["aggregation"] = aggre;
+
+    QJsonObject payload;
+    payload["id"] = videoId;
+    payload["prompt"] = prompts["vlm_prompt"].toString();
+    payload["caption_summarization_prompt"] = prompts["summarization"].toString();
+    payload["summary_aggregation_prompt"] = prompts["aggregation"].toString();
+    payload["model"] = modelId;
+    payload["chunk_duration"] = chunkSize;
+    payload["num_frames_per_chunk"] = numFramesPerChunk;
+    payload["vlm_input_width"] = vlmInputWidth;
+    payload["vlm_input_height"] = vlmInputHeight;
+    payload["chunk_overlap_duration"] = chunkOverlapDuration;
+    payload["summarize"] = true;
+    payload["enable_cv_metadata"] = enableCVmeta;
+    payload["enable_chat"] = enableChat;
+    payload["enable_chat_history"] = enableChatHistory;
+    payload["cv_pipeline_prompt"] = cvPrompt;
+
+    payload["max_tokens"] = maxTokens;
+    payload["temperature"] = temperature;
+    payload["top_p"] = topP;
+    payload["top_k"] = topK;
+    payload["summarize_batch_size"] = summarBatchSize;
+    payload["summarize_max_tokens"] = summarMaxTokens;
+
+
+    QJsonDocument doc = QJsonDocument(payload);
+    QByteArray data = doc.toJson(QJsonDocument::Compact);
+
+    QNetworkRequest req = makeRequest(summarizeEndpoint);
+
+    QNetworkReply* reply = manager->post(req, data);
+
+    Writter::info("Wating for summarize");
+
+    connect(reply,
+            static_cast<void(QNetworkReply::*)(QNetworkReply::NetworkError)>(&QNetworkReply::error),
+            this,
+            [reply](QNetworkReply::NetworkError code) {
+
+                Writter::warn(QString("Network error occurred: %1 %2")
+                                 .arg(code)
+                                 .arg(reply->errorString()));
+
+            });
+
+    connect(reply, &QNetworkReply::finished, [reply, videoPath, this](){
+
+        QVariant statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute);
+        QVariant reason = reply->attribute(QNetworkRequest::HttpReasonPhraseAttribute);
+
+        QByteArray responseData = reply->readAll();
+        QJsonObject rootObj = QJsonDocument::fromJson(responseData).object();
+        QJsonArray choices = rootObj["choices"].toArray();
+        QString summarizeId = rootObj["id"].toString();
+        QJsonObject choice = choices[0].toObject();
+        QJsonObject message = choice["message"].toObject();
+        QString content = message["content"].toString();
+
+        QJsonObject usage = rootObj["usage"].toObject();
+        int processingTime = usage["query_processing_time"].toInt();
+
+        Writter::info(QString("Summarazing infer time : %1 sec").arg(processingTime));
+
+        if(reply->error() != QNetworkReply::NoError)
+        {
+            int httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+
+            Writter::error(QString("Upload error: networkError = %1 errorString = %2 httpStatus = %3 reason = %4")
+                          .arg(reply->error())
+                          .arg(reply->errorString())
+                          .arg(httpStatus)
+                          .arg(reason.toString()));
+
+            QString err = QString("Summarize error: networkError=%1 errorString=%2 httpStatus=%3 reason=%4")
+                                          .arg(reply->error())
+                                          .arg(reply->errorString())
+                                          .arg(httpStatus)
+                                          .arg(reason.toString());
+
+            Writter::error(err);
+
+
+            emit uploadFailed(currentVideoPath, err);
+
+            reply->deleteLater();
+            return;
+        }
+
+        reply->deleteLater();
+
+
+        Writter::info(QString("End to Summarize of %1").arg(summarizeId));
+        emit doneSummarizeTest(videoPath, content, processingTime);
+        });
+
+}
 
