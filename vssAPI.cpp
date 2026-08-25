@@ -82,23 +82,24 @@ QNetworkRequest VssAPI::makeRequest(const QString& urlStr)
     return req;
 }
 
-void VssAPI::requestHealth()
+
+void VssAPI::requestHealth(std::function<void(bool)> callback)
 {
     initialize();
     QNetworkRequest req = makeRequest(healthyEndpoint);
 
     QNetworkReply* reply = manager->get(req);
 
-    connect(reply, &QNetworkReply::finished, [reply, this]() {
+    connect(reply, &QNetworkReply::finished, this, [reply, callback]() {
 
-        if(reply->error() != QNetworkReply::NoError){
-            Writter::error("HEALTH ERROR >>" + reply->errorString());
-            reply->deleteLater();
-            emit vssStatus(false);
-            return;
-        }
+        bool result = reply->error() == QNetworkReply::NoError;
 
-        emit vssStatus(true);
+        if(!result)
+            Writter::warn("Fail to healthy check, confirm VSS Agent is alive");
+
+        reply->deleteLater();
+
+        callback(result);
     });
 }
 
@@ -193,6 +194,23 @@ void VssAPI::requestTest(const QString& videoPath)
 
 void VssAPI::uploadVideo(const QString& videoPath)
 {
+    uploadVideo(videoPath,
+                [this, videoPath](bool success,
+                                  const QString& answer,
+                                  int inferTime,
+                                  const QString& error) {
+        if (!success) {
+            emit uploadFailed(videoPath, error);
+            return;
+        }
+
+        emit requestToSend(videoPath, answer, inferTime);
+    });
+}
+
+void VssAPI::uploadVideo(const QString& videoPath,
+                         SummarizeCallback callback)
+{
     if(!batchTimerFlag)
     {
         timer.start();
@@ -208,7 +226,10 @@ void VssAPI::uploadVideo(const QString& videoPath)
 
     if (!video->open(QIODevice::ReadOnly))
     {
-        emit uploadFailed(videoPath, "file open failed");
+        const QString error = "file open failed";
+        callback(false, QString(), 0, error);
+        delete multiPart;
+        delete video;
         return;
     }
 
@@ -244,7 +265,9 @@ void VssAPI::uploadVideo(const QString& videoPath)
             this,
             &VssAPI::onError);
 
-    connect(reply, &QNetworkReply::finished, [reply, this, videoPath]() {
+    connect(reply, &QNetworkReply::finished,
+            this,
+            [reply, this, videoPath, callback]() {
 
         QByteArray res = reply->readAll();
 
@@ -255,9 +278,9 @@ void VssAPI::uploadVideo(const QString& videoPath)
 
         if (reply->error() != QNetworkReply::NoError)
         {
-            emit uploadFailed(videoPath, reply->errorString());
+            const QString error = reply->errorString();
             reply->deleteLater();
-            startNextUpload();
+            callback(false, QString(), 0, error);
             return;
         }
 
@@ -265,14 +288,16 @@ void VssAPI::uploadVideo(const QString& videoPath)
 
         Writter::info(QString("Success to upload (videoId = %1)").arg(videoId));
 
-        summarize(videoId, videoPath);
+        summarize(videoId, videoPath, callback);
 //        testSummarize(videoId, videoPath);
 
         reply->deleteLater();
     });
 }
 
-void VssAPI::summarize(const QString& videoId, const QString& videoPath)
+void VssAPI::summarize(const QString& videoId,
+                       const QString& videoPath,
+                       SummarizeCallback callback)
 {
     QJsonObject prompts;
     prompts["vlm_prompt"] = vlmPrompt;
@@ -324,23 +349,14 @@ void VssAPI::summarize(const QString& videoId, const QString& videoPath)
 
             });
 
-    connect(reply, &QNetworkReply::finished, [reply, videoPath, this](){
+    connect(reply, &QNetworkReply::finished,
+            this,
+            [reply, videoPath, this, callback](){
 
         QVariant statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute);
         QVariant reason = reply->attribute(QNetworkRequest::HttpReasonPhraseAttribute);
 
-        QByteArray responseData = reply->readAll();
-        QJsonObject rootObj = QJsonDocument::fromJson(responseData).object();
-        QJsonArray choices = rootObj["choices"].toArray();
-        QString summarizeId = rootObj["id"].toString();
-        QJsonObject choice = choices[0].toObject();
-        QJsonObject message = choice["message"].toObject();
-        QString content = message["content"].toString();
-
-        QJsonObject usage = rootObj["usage"].toObject();
-        int processingTime = usage["query_processing_time"].toInt();
-
-        Writter::info(QString("Summarazing infer time : %1 sec").arg(processingTime));
+        const QByteArray responseData = reply->readAll();
 
         if(reply->error() != QNetworkReply::NoError)
         {
@@ -361,11 +377,43 @@ void VssAPI::summarize(const QString& videoId, const QString& videoPath)
             Writter::error(err);
 
 
-            emit uploadFailed(currentVideoPath, err);
-
             reply->deleteLater();
+            callback(false, QString(), 0, err);
             return;
         }
+
+        QJsonParseError parseError;
+        const QJsonDocument responseDoc =
+                QJsonDocument::fromJson(responseData, &parseError);
+
+        if (parseError.error != QJsonParseError::NoError ||
+            !responseDoc.isObject())
+        {
+            const QString error = QString("Invalid summarize response: %1")
+                    .arg(parseError.errorString());
+            reply->deleteLater();
+            callback(false, QString(), 0, error);
+            return;
+        }
+
+        const QJsonObject rootObj = responseDoc.object();
+        const QJsonArray choices = rootObj["choices"].toArray();
+        if (choices.isEmpty())
+        {
+            reply->deleteLater();
+            callback(false, QString(), 0, "Summarize choices is empty");
+            return;
+        }
+
+        const QString summarizeId = rootObj["id"].toString();
+        const QJsonObject message =
+                choices.first().toObject()["message"].toObject();
+        const QString content = message["content"].toString();
+        const int processingTime = rootObj["usage"].toObject()
+                ["query_processing_time"].toInt();
+
+        Writter::info(QString("Summarazing infer time : %1 sec")
+                      .arg(processingTime));
 
         reply->deleteLater();
 
@@ -380,7 +428,7 @@ void VssAPI::summarize(const QString& videoId, const QString& videoPath)
         }
 
         Writter::info(QString("End to Summarize of %1").arg(summarizeId));
-        emit requestToSend(videoPath, content, processingTime);
+        callback(true, content, processingTime, QString());
 //        startNextUpload();
         });
 }

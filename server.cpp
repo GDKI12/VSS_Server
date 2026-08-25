@@ -2,7 +2,7 @@
 #include <toml.hpp>
 
 VideoServer::VideoServer(QString name, quint16 port, QObject *parent)
-    : QObject(parent), m_uploading(false), m_port(port), name(name)
+    : QObject(parent), name(name)
 {
 
     auto data = toml::parse(CONFIG_FILE.toStdString());
@@ -14,19 +14,11 @@ VideoServer::VideoServer(QString name, quint16 port, QObject *parent)
     connect(&m_server, &QTcpServer::newConnection,
             this, &VideoServer::onNewConnection);
 
-    // meta info socket new connection event
-    connect(&m_metaServer, &QTcpServer::newConnection, this, &VideoServer::onMetaConnection);
-
     if (!m_server.listen(QHostAddress::Any, port))
         Writter::error("Stream server listen failed.");
     else
-        Writter::info(QString("Stream server %1 listening on port %2").arg(name).arg(port));
-
-    if(!m_metaServer.listen(QHostAddress::Any, port + 100))
-        Writter::error("meta info server listen failed.");
-    else
-        Writter::info(QString("Meta server   %1 listening on port %2")
-                    .arg(name).arg(port+100));
+        Writter::info(QString("Single socket server %1 listening on port %2")
+                      .arg(name).arg(port));
 
 
     QDir().mkpath(savePath);
@@ -47,18 +39,102 @@ void VideoServer::sendToClient(const QString& videoPath, const QString& answer)
     // request write log
 //    emit requestLog(dirName, answer, videoPath);
 
+    const QString requestId = takeRequestId(videoPath);
+    QTcpSocket* socket = m_resultSockets.take(requestId);
+
     obj["fileName"] = dirName;
+    obj["requestId"] = requestId;
+    obj["success"] = true;
     obj["answer"] = answer;
 
-    QByteArray data = QJsonDocument(obj).toJson(QJsonDocument::Compact);
-    data.append("\n");
+    sendOrQueueResult(requestId,
+                      socket,
+                      VssProtocol::PacketType::Result,
+                      obj);
+}
 
-    if (metaSocket && metaSocket->state() == QAbstractSocket::ConnectedState)
-    {
-        metaSocket->write(data);
-        metaSocket->flush();
+void VideoServer::sendErrorToClient(const QString& videoPath,
+                                    const QString& error)
+{
+    QJsonObject obj;
+    const QString requestId = takeRequestId(videoPath);
+    QTcpSocket* socket = m_resultSockets.take(requestId);
+
+    obj["fileName"] = QFileInfo(videoPath).baseName();
+    obj["requestId"] = requestId;
+    obj["success"] = false;
+    obj["error"] = error;
+
+    sendOrQueueResult(requestId,
+                      socket,
+                      VssProtocol::PacketType::Error,
+                      obj);
+}
+
+bool VideoServer::sendPacket(QTcpSocket* socket,
+                             VssProtocol::PacketType type,
+                             const QByteArray& payload)
+{
+    if (!socket ||
+        socket->state() != QAbstractSocket::ConnectedState ||
+        payload.size() > static_cast<int>(VssProtocol::MaxPayloadSize))
+        return false;
+
+    const QByteArray packet = VssProtocol::makePacket(type, payload);
+    if (socket->write(packet) != packet.size())
+        return false;
+
+    socket->flush();
+    return true;
+}
+
+void VideoServer::sendOrQueueResult(const QString& requestId,
+                                    QTcpSocket* socket,
+                                    VssProtocol::PacketType type,
+                                    const QJsonObject& result)
+{
+    if (requestId.isEmpty()) {
+        Writter::error(QString("Cannot route result on %1: empty requestId")
+                       .arg(name));
+        return;
     }
 
+    const QByteArray payload =
+            QJsonDocument(result).toJson(QJsonDocument::Compact);
+    if (sendPacket(socket, type, payload)) {
+        Writter::info(QString("Result sent on %1, requestId=%2")
+                      .arg(name, requestId));
+        return;
+    }
+
+    if (m_pendingResults.size() >= 100 &&
+        !m_pendingResults.contains(requestId))
+        m_pendingResults.erase(m_pendingResults.begin());
+    m_pendingResults[requestId] = VssProtocol::makePacket(type, payload);
+    Writter::warn(QString("Result queued on %1, requestId=%2")
+                  .arg(name, requestId));
+}
+
+void VideoServer::flushPendingResult(QTcpSocket* socket,
+                                     const QString& requestId)
+{
+    if (!socket || requestId.isEmpty() ||
+        !m_pendingResults.contains(requestId) ||
+        socket->state() != QAbstractSocket::ConnectedState)
+        return;
+
+    const QByteArray packet = m_pendingResults.value(requestId);
+    if (socket->write(packet) == packet.size()) {
+        socket->flush();
+        m_pendingResults.remove(requestId);
+        Writter::info(QString("Queued result flushed on %1, requestId=%2")
+                      .arg(name, requestId));
+    }
+}
+
+QString VideoServer::takeRequestId(const QString& videoPath)
+{
+    return m_requestIdsByVideoPath.take(videoPath);
 }
 VideoServer::~VideoServer()
 {
@@ -76,30 +152,26 @@ VideoServer::~VideoServer()
 
     m_clients.clear();
 
-    if(metaSocket)
-        metaSocket->deleteLater();
-
 }
 
 bool VideoServer::ensureFfmpegRunning(QTcpSocket *socket, ClientContext *ctx)
 {
-    if(ffmpeg->state() == QProcess::Running)
-        return true;
+    Q_UNUSED(socket);
 
-    QString timestamp = QDateTime::currentDateTime().toString("yyyyMMdd_hhmmss_zzz");
+    if (!ctx || ctx->requestId.isEmpty() ||
+        ctx->sensorName.isEmpty() || ctx->camId.isEmpty())
+        return false;
 
-    QString peerIp = socket->peerAddress().toString();
+    if (ctx->videoStarted)
+        return ffmpeg->state() == QProcess::Running;
 
-    QString fileName;
+    if (ffmpeg->state() == QProcess::Running)
+        return false;
 
-    if(m_metaByIp.contains(peerIp) && !m_metaByIp[peerIp].isEmpty())
-    {
-        QJsonObject meta = m_metaByIp[peerIp].dequeue();
-
-        fileName = meta["videoName"].toString();
-    }
-
-    peerIp.replace(":", "_");
+    const QString timestamp =
+            QDateTime::currentDateTime().toString("yyyyMMdd_hhMMss");
+    const QString fileName = ctx->sensorName + "_" + ctx->camId
+            + "_" + timestamp + ".mp4";
 
     QString dirPath = QString("%1/%2").arg(savePath, fileName);
 
@@ -111,7 +183,7 @@ bool VideoServer::ensureFfmpegRunning(QTcpSocket *socket, ClientContext *ctx)
 
     QStringList args;
     args << "-hide_banner"
-         << "-loglevel" << "info"
+         << "-loglevel" << "error"
          << "-y"
          << "-f" << "mpegts"
          << "-fflags" << "+genpts"
@@ -124,11 +196,13 @@ bool VideoServer::ensureFfmpegRunning(QTcpSocket *socket, ClientContext *ctx)
     ffmpeg->setArguments(args);
     ffmpeg->start(QIODevice::ReadWrite);
 
-    if(!ffmpeg->waitForStarted(-1))
+    if(!ffmpeg->waitForStarted(30000))
     {
         Writter::warn("Fail to start ffmpeg");
         return false;
     }
+
+    ctx->videoStarted = true;
 
     return true;
 
@@ -181,52 +255,245 @@ void VideoServer::onReadyRead()
     if (!ctx)
         return;
 
-    QByteArray data = socket->readAll();
-    if (data.isEmpty())
-        return;
+    ctx->inputBuffer.append(socket->readAll());
 
-    if (!ctx->startTime.isValid()) {
-        ctx->startTime = QDateTime::currentDateTime();
-    }
-
-    // 첫 데이터 수신 시점에 ffmpeg 시작
-    if (!ensureFfmpegRunning(socket, ctx)) {
-            qWarning() << QString("ffmpeg is not running for client %1")
-                          .arg(socket->peerAddress().toString());
-            return;
-    }
-
-    ctx->receivedBytes += static_cast<quint64>(data.size());
-
-    qint64 totalWritten = 0;
-    while (totalWritten < data.size())
+    while (true)
     {
-        qint64 n = ffmpeg->write(data.constData() + totalWritten,
-                                      data.size() - totalWritten);
-        if (n < 0) {
-            qWarning() << QString("Failed to write stream to ffmpeg: %1")
-                          .arg(ffmpeg->errorString());
-            stopFfmpeg();
+        if (ctx->inputBuffer.size() < VssProtocol::HeaderSize)
+            return;
+
+        const QByteArray header =
+                ctx->inputBuffer.left(VssProtocol::HeaderSize);
+        QDataStream stream(header);
+        stream.setByteOrder(QDataStream::BigEndian);
+
+        quint32 magic = 0;
+        quint8 rawType = 0;
+        quint32 payloadSize = 0;
+        stream >> magic >> rawType >> payloadSize;
+
+        if (magic != VssProtocol::Magic ||
+            payloadSize > VssProtocol::MaxPayloadSize)
+        {
+            Writter::error(QString("Invalid protocol header from %1")
+                           .arg(socket->peerAddress().toString()));
+            socket->abort();
             return;
         }
 
-        if (n == 0) {
-            if (!ffmpeg->waitForBytesWritten(60000)) {
-                qWarning() << QString("ffmpeg stdin flush timeout: %1")
-                              .arg(ffmpeg->errorString());
-                stopFfmpeg();
-                return;
-            }
+        const int packetSize = VssProtocol::HeaderSize
+                + static_cast<int>(payloadSize);
+        if (ctx->inputBuffer.size() < packetSize)
+            return;
+
+        const QByteArray payload =
+                ctx->inputBuffer.mid(VssProtocol::HeaderSize, payloadSize);
+        ctx->inputBuffer.remove(0, packetSize);
+
+        if (!processPacket(socket,
+                           ctx,
+                           static_cast<VssProtocol::PacketType>(rawType),
+                           payload))
+        {
+            Writter::error(QString("Failed to process packet type %1 on %2")
+                           .arg(rawType)
+                           .arg(name));
+            socket->abort();
+            return;
+        }
+    }
+}
+
+bool VideoServer::processPacket(QTcpSocket* socket,
+                                ClientContext* ctx,
+                                VssProtocol::PacketType type,
+                                const QByteArray& payload)
+{
+    if (!socket || !ctx)
+        return false;
+
+    if (type == VssProtocol::PacketType::Meta)
+    {
+        if (ctx->videoStarted)
+            return false;
+
+        QJsonParseError error;
+        const QJsonDocument doc = QJsonDocument::fromJson(payload, &error);
+        if (error.error != QJsonParseError::NoError || !doc.isObject())
+            return false;
+
+        const QJsonObject meta = doc.object();
+        ctx->sensorName = meta["sensorName"].toString();
+        ctx->camId = meta["camId"].toString();
+        ctx->requestId = meta["requestId"].toString();
+        ctx->receivedBytes = 0;
+        ctx->startTime = QDateTime();
+        ctx->endTime = QDateTime();
+
+        if (ctx->sensorName.isEmpty() || ctx->camId.isEmpty() ||
+            ctx->requestId.isEmpty())
+            return false;
+
+        m_resultSockets[ctx->requestId] = socket;
+        flushPendingResult(socket, ctx->requestId);
+
+        Writter::info(QString("Receive metadata: sensor=%1 cam=%2 requestId=%3")
+                      .arg(ctx->sensorName, ctx->camId, ctx->requestId));
+        return true;
+    }
+
+    if (type == VssProtocol::PacketType::Resume)
+    {
+        const QJsonObject obj = QJsonDocument::fromJson(payload).object();
+        const QString requestId = obj["requestId"].toString();
+        if (requestId.isEmpty())
+            return false;
+
+        m_resultSockets[requestId] = socket;
+        flushPendingResult(socket, requestId);
+        return true;
+    }
+
+    if (type == VssProtocol::PacketType::VideoChunk)
+    {
+        if (ctx->requestId.isEmpty())
+            return false;
+
+        if (!ctx->startTime.isValid())
+            ctx->startTime = QDateTime::currentDateTime();
+
+        if (!ensureFfmpegRunning(socket, ctx))
+            return false;
+
+        return writeVideoChunk(ctx, payload);
+    }
+
+    if (type == VssProtocol::PacketType::VideoEnd)
+    {
+        finishVideo(socket, ctx);
+        return true;
+    }
+
+    return false;
+}
+
+bool VideoServer::writeVideoChunk(ClientContext* ctx,
+                                  const QByteArray& payload)
+{
+    if (!ctx || !ctx->videoStarted || payload.isEmpty())
+        return false;
+
+    ctx->receivedBytes += static_cast<quint64>(payload.size());
+    qint64 totalWritten = 0;
+
+    while (totalWritten < payload.size())
+    {
+        const qint64 written = ffmpeg->write(
+            payload.constData() + totalWritten,
+            payload.size() - totalWritten);
+
+        if (written < 0)
+            return false;
+
+        if (written == 0)
+        {
+            if (!ffmpeg->waitForBytesWritten(30000))
+                return false;
             continue;
         }
 
-        totalWritten += n;
+        totalWritten += written;
+
+        while (ffmpeg->bytesToWrite() > 4 * 1024 * 1024)
+        {
+            if (!ffmpeg->waitForBytesWritten(30000))
+                return false;
+        }
     }
 
-    if(ffmpeg->state() == QProcess::NotRunning)
+    return ffmpeg->state() == QProcess::Running;
+}
+
+void VideoServer::finishVideo(QTcpSocket* socket, ClientContext* ctx)
+{
+    if (!socket || !ctx || ctx->requestId.isEmpty())
         return;
 
-    return;
+    const QString requestId = ctx->requestId;
+
+    if (!ctx->videoStarted)
+    {
+        QJsonObject result;
+        result["requestId"] = requestId;
+        result["success"] = false;
+        result["error"] = "VideoEnd received before video data";
+        sendOrQueueResult(requestId,
+                          socket,
+                          VssProtocol::PacketType::Error,
+                          result);
+        ctx->requestId.clear();
+        return;
+    }
+
+    stopFfmpeg();
+    ctx->videoStarted = false;
+    ctx->endTime = QDateTime::currentDateTime();
+
+    if (ffmpeg->exitStatus() != QProcess::NormalExit ||
+        ffmpeg->exitCode() != 0)
+    {
+        QJsonObject result;
+        result["requestId"] = requestId;
+        result["success"] = false;
+        result["error"] = QString("Server FFmpeg failed: %1")
+                .arg(QString::fromUtf8(ffmpeg->readAllStandardError()));
+        sendOrQueueResult(requestId,
+                          socket,
+                          VssProtocol::PacketType::Error,
+                          result);
+
+        ctx->requestId.clear();
+        ctx->sensorName.clear();
+        ctx->camId.clear();
+        ctx->savePath.clear();
+        ctx->receivedBytes = 0;
+        return;
+    }
+
+    const qint64 elapsedMs = ctx->startTime.isValid()
+            ? ctx->startTime.msecsTo(ctx->endTime) : 0;
+    const QString videoPath = ctx->savePath;
+    const QFileInfo fileInfo(videoPath);
+
+    if (fileInfo.exists() && fileInfo.size() > 0)
+    {
+        Writter::info(QString("Saved Video: %1 size=%2 elapsed=%3 ms")
+                      .arg(videoPath)
+                      .arg(fileInfo.size())
+                      .arg(elapsedMs));
+
+        m_requestIdsByVideoPath[videoPath] = requestId;
+        m_resultSockets[requestId] = socket;
+        emit requestSummarize(videoPath);
+    }
+    else
+    {
+        QJsonObject result;
+        result["requestId"] = requestId;
+        result["success"] = false;
+        result["error"] = QString("Saved file is missing or empty: %1")
+                .arg(videoPath);
+        sendOrQueueResult(requestId,
+                          socket,
+                          VssProtocol::PacketType::Error,
+                          result);
+    }
+
+    ctx->requestId.clear();
+    ctx->sensorName.clear();
+    ctx->camId.clear();
+    ctx->savePath.clear();
+    ctx->receivedBytes = 0;
 }
 
 void VideoServer::onDisconnected()
@@ -248,113 +515,25 @@ void VideoServer::onDisconnected()
 
     if (m_clients.contains(socket)) {
         ClientContext *ctx = m_clients.take(socket);
-        ctx->endTime = QDateTime::currentDateTime();
+        const QString requestId = ctx->requestId;
 
-        qint64 elapsedMs = ctx->startTime.isValid()
-                         ? ctx->startTime.msecsTo(ctx->endTime)
-                         : 0;
+        if (ctx->videoStarted)
+            stopFfmpeg();
 
-        encodeTimes.push_back(elapsedMs);
-        ctn++;
-
-        if(ctn == 10)
-        {
-            if(!encodeTimes.isEmpty())
-            {
-                auto result = std::minmax_element(encodeTimes.cbegin(), encodeTimes.cend());
-
-                qint64 minValue = *result.first;
-                qint64 maxValue = *result.second;
-
-                qint64 sum = 0;
-
-                for(auto itr = encodeTimes.cbegin(); itr != encodeTimes.cend(); itr++)
-                    sum += *itr;
-
-                qint64 avg =  sum / encodeTimes.size();
-
-                QString encodLog = QString("Encoding ( Max : %1, Min : %2, Avg : %3 )").arg(maxValue).arg(minValue).arg(avg);
-
-                Writter::info(encodLog);
-            }
-
-            ctn = 0;
-            encodeTimes.clear();
-        }
-
-        stopFfmpeg();
-        Writter::info("Success to save clip");
-
-        QFileInfo fi(ctx->savePath);
-        if (fi.exists() && fi.size() > 0) {
-
-            QString ffmpegLog = QString("Saved Video : %1 size = %2 bytes elapsed = %3 ms")
-                                  .arg(ctx->savePath)
-                                  .arg(fi.size())
-                                  .arg(elapsedMs);
-
-            Writter::info(ffmpegLog);
-
-            const QString savePath = ctx->savePath;
-//            emit requestEnqueue(savePath);
-            emit requestSummarize(savePath);
-
-        } else {
-            Writter::warn(QString("Saved file is  missing or empty : %1").arg(ctx->savePath));
+        if (!requestId.isEmpty()) {
+            QJsonObject result;
+            result["requestId"] = requestId;
+            result["success"] = false;
+            result["error"] = "Socket disconnected before VideoEnd";
+            sendOrQueueResult(requestId,
+                              nullptr,
+                              VssProtocol::PacketType::Error,
+                              result);
         }
 
         delete ctx;
     }
 
     socket->deleteLater();
-}
-
-void VideoServer::onMetaConnection()
-{
-    while(m_metaServer.hasPendingConnections())
-    {
-        metaSocket = m_metaServer.nextPendingConnection();
-
-        connect(metaSocket, &QTcpSocket::readyRead, this, &VideoServer::onMetaRead);
-        connect(metaSocket, &QTcpSocket::disconnected, metaSocket, &QTcpSocket::deleteLater);
-    }
-}
-
-void VideoServer::onMetaRead()
-{
-    QTcpSocket* socket = qobject_cast<QTcpSocket*>(sender());
-
-    if(!socket)
-        return;
-
-    QByteArray data = socket->readAll();
-    if(data.isEmpty())
-        return;
-
-    QJsonDocument doc = QJsonDocument::fromJson(data);
-    if(!doc.isObject())
-        return;
-
-    QJsonObject obj = doc.object();
-    QString ip = socket->peerAddress().toString();
-
-    m_metaByIp[ip].enqueue(obj);
-
-    QString videoName = obj["videoName"].toString();
-
-    int idx = videoName.indexOf("_cam");
-
-    QString sensorName;
-
-    if(idx != -1)
-        sensorName = videoName.left(idx);
-
-
-    QString metaInfoLog = QString("Receive Meta data videoName:%1 queue size: %2")
-                          .arg(videoName)
-                          .arg(m_metaByIp[ip].size());
-
-    Writter::info(metaInfoLog);
-
 }
 

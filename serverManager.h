@@ -16,6 +16,10 @@ public:
     void videoTestInit();
     void testStart();
 
+private:
+    void processRequest(QTcpSocket* socket);
+    void sendJson(QTcpSocket* socket, int statusCode, const QJsonObject& json);
+    bool sendToConnectedClients(const QByteArray& data);
 public slots:
     void onNewConnection();
     void getReplies(const QString&, const QString&, int);
@@ -43,11 +47,8 @@ private:
 
     QTcpServer vssServer;
 
-    QTcpSocket* vssSocket = nullptr;
-
     int vssPort;
 
-    QVector<int> inferTimeList;
     ClipInfo clipInfos;
 
     //Test시 사용

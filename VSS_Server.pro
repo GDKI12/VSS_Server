@@ -34,6 +34,7 @@ SOURCES += \
     vssAPI.cpp
 
 HEADERS += \
+    vssProtocol.h \
     Log/vssLog.h \
     define.h \
     serverManager.h \

@@ -4,20 +4,27 @@
 #include "define.h"
 
 #include <QTimer>
+#include <functional>
 
 class VssAPI : public QObject
 {
     Q_OBJECT
 
 public:
+    using SummarizeCallback = std::function<void(bool,
+                                                 const QString&,
+                                                 int,
+                                                 const QString&)>;
+
     explicit VssAPI(QObject* parent = nullptr);
     ~VssAPI();
     QString getLogPath();
-    void requestHealth();
+    void requestHealth(std::function<void(bool)> callback);
     void getModel();
     void getFiles();
 
     void enqueueUpload(const QString& videoPath);
+    void uploadVideo(const QString& videoPath, SummarizeCallback callback);
 
 public slots:
     void initialize();
@@ -36,7 +43,9 @@ signals:
 
     void doneSummarizeTest(const QString& videoPath, const QString& answer, int inferTime);
 private:
-    void summarize(const QString& videoId, const QString& videoPath);
+    void summarize(const QString& videoId,
+                   const QString& videoPath,
+                   SummarizeCallback callback);
     void qna(const QString& videoPath);
     QNetworkRequest makeRequest(const QString& url);
 

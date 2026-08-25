@@ -63,6 +63,7 @@ struct InitConfig
 struct ClipInfo
 {
     QString sensorName;
+    QString camId;
     QList<QString> weather;
     QList<QString> timeOfDay;
     QList<QString> roadType;
@@ -71,6 +72,11 @@ struct ClipInfo
 
 struct ClientContext {
     QString savePath;
+    QString requestId;
+    QString sensorName;
+    QString camId;
+    QByteArray inputBuffer;
+    bool videoStarted = false;
     quint64 receivedBytes = 0;
     QDateTime startTime;
     QDateTime endTime;

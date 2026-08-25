@@ -28,9 +28,39 @@ ServerManager::ServerManager(QObject* parent) : QObject(parent), vssPort(4303)
     connect(server2.get(), &VideoServer::requestEnqueue, apiManager, &VssAPI::enqueueUpload);
     connect(server3.get(), &VideoServer::requestEnqueue, apiManager, &VssAPI::enqueueUpload);
 
-    connect(server1.get(), &VideoServer::requestSummarize, apiManager, &VssAPI::uploadVideo);
-    connect(server2.get(), &VideoServer::requestSummarize, apiManager, &VssAPI::uploadVideo);
-    connect(server3.get(), &VideoServer::requestSummarize, apiManager, &VssAPI::uploadVideo);
+    const auto connectSummarize = [this](VideoServer* videoServer) {
+        QPointer<VideoServer> safeServer(videoServer);
+
+        connect(videoServer, &VideoServer::requestSummarize,
+                this,
+                [this, safeServer](const QString& videoPath) {
+            apiManager->uploadVideo(
+                videoPath,
+                [safeServer, videoPath](bool success,
+                                        const QString& answer,
+                                        int inferTime,
+                                        const QString& error) {
+                if (!safeServer)
+                    return;
+
+                if (!success) {
+                    Writter::error(QString("Summarize failed for %1: %2")
+                                   .arg(videoPath, error));
+                    safeServer->sendErrorToClient(videoPath, error);
+                    return;
+                }
+
+                Writter::info(QString("Summarize callback for %1 (%2 sec)")
+                              .arg(videoPath)
+                              .arg(inferTime));
+                safeServer->sendToClient(videoPath, answer);
+            });
+        });
+    };
+
+    connectSummarize(server1.get());
+    connectSummarize(server2.get());
+    connectSummarize(server3.get());
 
     connect(apiManager, &VssAPI::requestToSend, this, &ServerManager::getReplies);
     connect(apiManager, &VssAPI::doneSummarizeTest, this, &ServerManager::saveTestLog);
@@ -75,10 +105,7 @@ ServerManager::ServerManager(QObject* parent) : QObject(parent), vssPort(4303)
 
 ServerManager::~ServerManager()
 {
-    if(vssSocket && vssSocket->state() == QAbstractSocket::ConnectedState)
-        vssSocket->disconnectFromHost();
-    if(vssSocket)
-        vssSocket->deleteLater();
+    // 처리 필요
 }
 
 void ServerManager::saveTestLog(const QString& videoPath, const QString& answer, int inferTime)
@@ -144,11 +171,6 @@ void ServerManager::saveTestLog(const QString& videoPath, const QString& answer,
 
 void ServerManager::terminate()
 {
-    if(vssSocket && vssSocket->state() == QAbstractSocket::ConnectedState)
-        vssSocket->disconnectFromHost();
-    if(vssSocket)
-        vssSocket->deleteLater();
-
     logger->deleteLater();
     apiManager->deleteLater();
 }
@@ -156,18 +178,66 @@ void ServerManager::onNewConnection()
 {
     while(vssServer.hasPendingConnections())
     {
-        vssSocket = vssServer.nextPendingConnection();
+        QTcpSocket* socket = vssServer.nextPendingConnection();
 
-        connect(vssSocket, &QTcpSocket::readyRead, this, &ServerManager::getInitParams);
-        connect(vssSocket, &QTcpSocket::disconnected, vssSocket, &QTcpSocket::deleteLater);
+        connect(socket, &QTcpSocket::readyRead,
+                this, &ServerManager::getInitParams);
+        connect(socket, &QTcpSocket::disconnected,
+                socket, &QTcpSocket::deleteLater);
     }
+}
+
+bool ServerManager::sendToConnectedClients(const QByteArray& data)
+{
+    bool sent = false;
+    const auto sockets = vssServer.findChildren<QTcpSocket*>(
+                QString(), Qt::FindDirectChildrenOnly);
+
+    for (QTcpSocket* socket : sockets)
+    {
+        if (!socket ||
+            socket->state() != QAbstractSocket::ConnectedState)
+            continue;
+
+        if (socket->write(data) >= 0)
+        {
+            socket->flush();
+            sent = true;
+        }
+    }
+
+    return sent;
+}
+
+void ServerManager::processRequest(QTcpSocket *socket)
+{
+    QByteArray request = socket->readAll();
+
+    qDebug() << "Request:";
+    qDebug().noquote() << request;
+
+    if(request.startsWith("GET /health"))
+    {
+        apiManager->requestHealth([socket](bool result){
+            QJsonObject response;
+
+            response["status"] = result ? "ok" : "error";
+            response["isReady"] = true;
+
+            QByteArray body =
+                    QJsonDocument(response).toJson(QJsonDocument::Compact);
+
+            socket->write(body);
+        });
+
+        return;
+    }
+
+
 }
 #ifdef TEST
 void ServerManager::test(const QString& path)
 {
-//    QFileInfo fi(path);
-//    QString fileName = fi.baseName();
-
     VssInfo vssInfo;
 
     TestData td = testList.dequeue();
@@ -227,21 +297,23 @@ void ServerManager::test(const QString& path)
 #endif
 void ServerManager::sendToClient(ClipInfo clipInfo)
 {
+    InitConfig test = initConfig;
+    ClipInfo testClipInfo = clipInfo;
+
     Writter::info("Strat to send");
 
     bool result = false;
 
-    QString weatherInfo;
-    QString timeInfo;
-    QString roadInfo;
-    QString eventInfo;
+    QJsonArray weatherArr;
+    QJsonArray timeArr;
+    QJsonArray roadArr;
+    QJsonArray eventArr;
 
     for(const QString& str : initConfig.weather)
     {
         if(clipInfo.weather.contains(str))
         {
-            result = true;
-            return;
+            weatherArr.append(str);
         }
     }
 
@@ -249,8 +321,7 @@ void ServerManager::sendToClient(ClipInfo clipInfo)
     {
         if(clipInfo.timeOfDay.contains(str))
         {
-            result = true;
-            return;
+            timeArr.append(str);
         }
     }
 
@@ -258,8 +329,7 @@ void ServerManager::sendToClient(ClipInfo clipInfo)
     {
         if(clipInfo.roadType.contains(str))
         {
-            result = true;
-            return;
+            roadArr.append(str);
         }
     }
 
@@ -267,23 +337,28 @@ void ServerManager::sendToClient(ClipInfo clipInfo)
     {
         if(clipInfo.event.contains(str))
         {
-            result = true;
-            return;
+            eventArr.append(str);
         }
     }
 
+    if(!weatherArr.empty() && !timeArr.empty() && !roadArr.empty() && !eventArr.empty())
+        result = true;
 
     QJsonObject obj;
 
     obj["isSave"] = result;
     obj["sensorName"] = clipInfo.sensorName;
+    obj["weatherList"] = weatherArr;
+    obj["timeList"] = timeArr;
+    obj["roadList"] = roadArr;
+    obj["eventList"] = eventArr;
     QByteArray data = QJsonDocument(obj).toJson(QJsonDocument::Compact);
     data.append("\n");
 
-    if(vssSocket && vssSocket->state() == QAbstractSocket::ConnectedState)
+    qDebug() << "object";
+    qDebug() << data;
+    if(sendToConnectedClients(data))
     {
-        vssSocket->write(data);
-        vssSocket->flush();
         Writter::info(QString("Send result to test client : %1").arg(QString::fromUtf8(data).remove('\n')));
     }else
     {
@@ -360,8 +435,9 @@ void ServerManager::getInitParams()
              continue;
          }
 
+        InitConfig test = initConfig;
+
         Writter::info("Get Mission data");
-        apiManager->requestHealth();
         return;
 
     }
@@ -376,16 +452,12 @@ void ServerManager::responseTo(bool status)
     QByteArray data = QJsonDocument(obj).toJson(QJsonDocument::Compact);
     data.append("\n");
 
-    if(vssSocket && vssSocket->state() == QAbstractSocket::ConnectedState)
-    {
-        vssSocket->write(data);
-        vssSocket->flush();
-    }else{
-
-    }
+    sendToConnectedClients(data);
 }
 void ServerManager::getReplies(const QString& videoPath, const QString& text, int inferTime)
 {
+
+    qDebug() << "VSS Result: " << text;
     QMap<QString, QString> result;
 
     QStringList lines = text.split('\n');
@@ -410,7 +482,7 @@ void ServerManager::getReplies(const QString& videoPath, const QString& text, in
     if (match.hasMatch())
     {
         result["sensorName"] = match.captured(1);
-        result["camName"]    = match.captured(2);
+        result["camId"]    = match.captured(2);
     }
 
     result["videoPath"] = videoPath;
@@ -424,6 +496,8 @@ void ServerManager::getReplies(const QString& videoPath, const QString& text, in
         clipInfos.sensorName = result["sensorName"];
     }
 
+    clipInfos.camId = result["camId"];
+
     if(result.contains("Weather"))
     {
         if(result["Weather"].contains("clear"))
@@ -436,14 +510,18 @@ void ServerManager::getReplies(const QString& videoPath, const QString& text, in
             clipInfos.weather.append("rain");
         else if(result["Weather"].contains("snow"))
             clipInfos.weather.append("snow");
+        else
+            clipInfos.weather.append("unknown");
     }
 
     if(result.contains("Time"))
     {
         if(result["Time"].contains("daytime"))
-            clipInfos.weather.append("daytime");
+            clipInfos.timeOfDay.append("daytime");
         else if(result["Time"].contains("nighttime"))
-            clipInfos.weather.append("nighttime");
+            clipInfos.timeOfDay.append("nighttime");
+        else
+            clipInfos.timeOfDay.append("unknown");
     }
 
     if(result.contains("Road"))
@@ -481,18 +559,12 @@ void ServerManager::getReplies(const QString& videoPath, const QString& text, in
             clipInfos.event.append("ped_illegal");
         else if(result["Event"].contains("construction"))
             clipInfos.event.append("construction");
+        else
+            clipInfos.event.append("unknown");
     }
 
-    inferTimeList.push_back(inferTime);
-
-    qDebug() << "TASK POOL SIZE : " << inferTimeList.size();
-    if(inferTimeList.size() == initConfig.channel)
-    {
-        Writter::info("Request sent to client");
-
-        inferTimeList.clear();
-        sendToClient(clipInfos);
-    }
+    QString log = QString("Request send to client : %1").arg(result["camId"]);
+    sendToClient(clipInfos);
 }
 
 void ServerManager::videoTestInit()
