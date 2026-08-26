@@ -39,7 +39,6 @@ signals:
     void uploadFailed(const QString& videoPath, const QString& reason);
     void requestToSend(const QString& videoPath, const QString& answer, int inferTime);
     void onTest(const QString& videoPath);
-    void vssStatus(bool);
 
     void doneSummarizeTest(const QString& videoPath, const QString& answer, int inferTime);
 private:

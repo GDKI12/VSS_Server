@@ -11,7 +11,6 @@ class ServerManager : public QObject
 public:
     explicit ServerManager(QObject* parent = nullptr);
     ~ServerManager();
-    void sendToClient(ClipInfo clipInfo);
     void terminate();
     void videoTestInit();
     void testStart();
@@ -19,12 +18,7 @@ public:
 private:
     void processRequest(QTcpSocket* socket);
     void sendJson(QTcpSocket* socket, int statusCode, const QJsonObject& json);
-    bool sendToConnectedClients(const QByteArray& data);
 public slots:
-    void onNewConnection();
-    void getReplies(const QString&, const QString&, int);
-    void getInitParams();
-    void responseTo(bool status);
     void saveTestLog(const QString& videoPath, const QString& answer, int inferTime);
 #ifdef TEST
     void test(const QString&);
@@ -40,14 +34,6 @@ private:
 
     VSSLog* logger = nullptr;
     VssAPI* apiManager = nullptr;
-
-    // 미션 설정값
-    QByteArray paramBuffer;
-    InitConfig initConfig;
-
-    QTcpServer vssServer;
-
-    int vssPort;
 
     ClipInfo clipInfos;
 

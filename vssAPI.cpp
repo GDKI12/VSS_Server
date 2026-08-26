@@ -204,7 +204,6 @@ void VssAPI::uploadVideo(const QString& videoPath)
             return;
         }
 
-        emit requestToSend(videoPath, answer, inferTime);
     });
 }
 
