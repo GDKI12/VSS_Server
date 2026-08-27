@@ -28,12 +28,14 @@ LIBS += -lopencv_core \
 
 SOURCES += \
     Log/vssLog.cpp \
+    apiserver.cpp \
     main.cpp \
     server.cpp \
     serverManager.cpp \
     vssAPI.cpp
 
 HEADERS += \
+    apiserver.h \
     vssProtocol.h \
     Log/vssLog.h \
     define.h \

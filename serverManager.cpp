@@ -11,6 +11,18 @@ ServerManager::ServerManager(QObject* parent) : QObject(parent)
     apiManager = new VssAPI();
     logger = new VSSLog(apiManager->getLogPath());
 
+    if(!apiServer.listen(QHostAddress::Any, 8080))
+    {
+        Writter::error("Fail to open vss api server");
+    }else{
+        Writter::info("Success to open vss api server");
+    }
+
+    apiManager->requestHealth([this](bool status){
+        Writter::info("Check vss agent alive?");
+        apiServer.vssHealthyCheck(status);
+    });
+
     server1 = std::make_shared<VideoServer>("cam1", 5000);
     server2 = std::make_shared<VideoServer>("cam2", 5001);
     server3 = std::make_shared<VideoServer>("cam3", 5002);
@@ -165,33 +177,6 @@ void ServerManager::terminate()
 }
 
 
-
-void ServerManager::processRequest(QTcpSocket *socket)
-{
-    QByteArray request = socket->readAll();
-
-    qDebug() << "Request:";
-    qDebug().noquote() << request;
-
-    if(request.startsWith("GET /health"))
-    {
-        apiManager->requestHealth([socket](bool result){
-            QJsonObject response;
-
-            response["status"] = result ? "ok" : "error";
-            response["isReady"] = true;
-
-            QByteArray body =
-                    QJsonDocument(response).toJson(QJsonDocument::Compact);
-
-            socket->write(body);
-        });
-
-        return;
-    }
-
-
-}
 #ifdef TEST
 void ServerManager::test(const QString& path)
 {

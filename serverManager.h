@@ -4,6 +4,7 @@
 #include "vssAPI.h"
 #include "Log/vssLog.h"
 #include "server.h"
+#include "apiserver.h"
 
 class ServerManager : public QObject
 {
@@ -16,7 +17,6 @@ public:
     void testStart();
 
 private:
-    void processRequest(QTcpSocket* socket);
     void sendJson(QTcpSocket* socket, int statusCode, const QJsonObject& json);
 public slots:
     void saveTestLog(const QString& videoPath, const QString& answer, int inferTime);
@@ -28,6 +28,7 @@ signals:
     void finishedSendToClient();
 
 private:
+    APIServer apiServer;
     std::shared_ptr<VideoServer> server1;
     std::shared_ptr<VideoServer> server2;
     std::shared_ptr<VideoServer> server3;

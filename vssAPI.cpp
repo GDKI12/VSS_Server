@@ -15,6 +15,8 @@
 VssAPI::VssAPI(QObject* parent)
     : QObject(parent), manager(nullptr), m_uploading(false)
 {
+    manager = new QNetworkAccessManager(this);
+
     auto data      = toml::parse(CONFIG_FILE.toStdString());
     vssURL         = QString::fromStdString(toml::find<std::string>(data, "setting", "vss_url"));
 
@@ -49,6 +51,9 @@ VssAPI::VssAPI(QObject* parent)
     filesEndpoint = vssURL + "/files";
     summarizeEndpoint = vssURL + "/summarize";
     qnaEndpoint = vssURL + "/chat/completions";
+
+    getModel();
+
 }
 
 VssAPI::~VssAPI()
@@ -65,9 +70,6 @@ void VssAPI::initialize()
 {
     if (!manager)
         manager = new QNetworkAccessManager(this);
-#ifndef TEST
-    getModel();
-#endif
 }
 
 QNetworkRequest VssAPI::makeRequest(const QString& urlStr)
@@ -85,7 +87,7 @@ QNetworkRequest VssAPI::makeRequest(const QString& urlStr)
 
 void VssAPI::requestHealth(std::function<void(bool)> callback)
 {
-    initialize();
+//    initialize();
     QNetworkRequest req = makeRequest(healthyEndpoint);
 
     QNetworkReply* reply = manager->get(req);
@@ -188,7 +190,7 @@ void VssAPI::startNextUpload()
 
 void VssAPI::requestTest(const QString& videoPath)
 {
-    initialize();
+//    initialize();
     emit onTest(videoPath);
 }
 
@@ -216,7 +218,7 @@ void VssAPI::uploadVideo(const QString& videoPath,
         batchTimerFlag = true;
     }
 
-    initialize();
+//    initialize();
 
     QFile* video = new QFile(videoPath);
 
