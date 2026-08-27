@@ -66,11 +66,6 @@ QString VssAPI::getLogPath()
     return logPath;
 }
 
-void VssAPI::initialize()
-{
-    if (!manager)
-        manager = new QNetworkAccessManager(this);
-}
 
 QNetworkRequest VssAPI::makeRequest(const QString& urlStr)
 {
@@ -87,7 +82,6 @@ QNetworkRequest VssAPI::makeRequest(const QString& urlStr)
 
 void VssAPI::requestHealth(std::function<void(bool)> callback)
 {
-//    initialize();
     QNetworkRequest req = makeRequest(healthyEndpoint);
 
     QNetworkReply* reply = manager->get(req);
@@ -114,9 +108,6 @@ void VssAPI::getModel()
     connect(reply, &QNetworkReply::finished, [reply, this]() {
 
         QByteArray data = reply->readAll();
-
-        QString log = "MODEL >> " + data;
-        Writter::info(log);
 
         if (reply->error() != QNetworkReply::NoError)
         {
@@ -190,7 +181,6 @@ void VssAPI::startNextUpload()
 
 void VssAPI::requestTest(const QString& videoPath)
 {
-//    initialize();
     emit onTest(videoPath);
 }
 
@@ -218,7 +208,6 @@ void VssAPI::uploadVideo(const QString& videoPath,
         batchTimerFlag = true;
     }
 
-//    initialize();
 
     QFile* video = new QFile(videoPath);
 

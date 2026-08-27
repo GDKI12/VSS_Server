@@ -27,7 +27,6 @@ public:
     void uploadVideo(const QString& videoPath, SummarizeCallback callback);
 
 public slots:
-    void initialize();
     void onError(QNetworkReply::NetworkError error);
     void requestTest(const QString& videoPath);
     void startNextUpload();

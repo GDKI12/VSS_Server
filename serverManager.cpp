@@ -19,7 +19,7 @@ ServerManager::ServerManager(QObject* parent) : QObject(parent)
     }
 
     apiManager->requestHealth([this](bool status){
-        Writter::info("Check vss agent alive?");
+        Writter::info("Request vss healthy check");
         apiServer.vssHealthyCheck(status);
     });
 
